@@ -1,0 +1,12 @@
+mace-torch
+smolagents[tools]
+datasets
+faiss-cpu
+langchain
+langchain-community
+langchain-huggingface
+pandas
+requests
+sentence-transformers
+tqdm
+transformers

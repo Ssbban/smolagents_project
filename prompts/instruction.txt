@@ -1,0 +1,13 @@
+This file is kept only as a legacy note.
+
+The active prompts are:
+- prompts/manager_instruction.txt
+- prompts/mace_instruction.txt
+- prompts/ipi_instruction.txt
+
+Current rules:
+- MACE flags must be classified with the mace_cli_schema tool. Do not manually
+  inspect arg_parser.py for value-vs-switch classification.
+- i-PI XML edits must use exact XPath updates or explicit append blocks after
+  inspecting the template with ipi_template_schema. Do not use fuzzy simple
+  parameter names for XML generation.
