@@ -107,7 +107,7 @@ ALWAYS call `slurm_config()` to get available partitions, nodes, GPU, the conda 
 7.  **Hand-off**: Ask the user for confirmation: "I have generated both the i-PI input and the ASE client script. Please review them. Once you confirm, I will proceed to generate the submission script."
     - If the user confirms, go step 8.
     - If the user requests changes, determine if they affect Part 1 or Part 2 and restart the workflow from the appropriate step.
-8.  **Check REMD and PIMD simulations**: Based on the "script_content" returned by `ipi_InputFile_generator`, determine whether this is a REMD or PIMD simulation by looking for keywords like "remd", "replica", "pimd", "nbeads".
+8.  **Check REMD and PIMD simulations**: Based on the "script_content" returned by `ipi_InputFile_generator`, determine whether this is a REMD or PIMD simulation by looking for keywords like "remd", "replica", "pimd", or nbeads larger than 1.
     - If REMD or PIMD is detected, call `UserInputTool` with: "I detected this is a [REMD/PIMD] simulation. For optimal performance, you should run multiple force provider instances (ideally equal to the number of replicas/beads). How many force providers do you want to run? For example, if you have 8 REMD conditions or 8 beads, you should use 8 force providers."
     - Use the user's response to set `multi_run=True` and `num_force_providers`.
     - If not REMD/PIMD, set `num_force_providers = 1`.
@@ -117,7 +117,7 @@ ALWAYS call `slurm_config()` to get available partitions, nodes, GPU, the conda 
     - "What is the path to your conda activation script?"
     - "What is the path to your i-PI environment script? (default: ~/i-pi/env.sh)"
 10. **Submit**: Call `ipi_submit_generator` with:
-    - ipi_input_path: Use the exact "script_path" from step g
+    - ipi_input_path: Use the exact "script_path" from step 2h
     - ase_path: Use the exact "script_path" from step 5
     - partition: Selected partition from step 9
     - conda_env: User's conda environment
@@ -125,4 +125,3 @@ ALWAYS call `slurm_config()` to get available partitions, nodes, GPU, the conda 
     - ipi_env_path: User's i-PI environment path
     - num_force_providers: Number determined in step 8
     - Other parameters as needed (job_name, time, memory, etc.)
-```

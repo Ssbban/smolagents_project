@@ -17,7 +17,7 @@ IPI_TEMPLATE_URLS = {
     "06-flexible-MTTK": "06-flexible-MTTK/input.xml",
     "07-REMD-NVT": "07-REMD-NVT/input.xml",
     "08-REMD-NPT": "08-REMD-NPT/input.xml",
-    "09-REPIMD-NVT-for-dynamics": "09-REPIMD-NVT-for-dynamics/input.xml",
+    "09-REPIMD-NVT-for-dynamics": "09-PINVT-for-dynamics/input.xml",
 }
 
 SIMULATION_ATTR_OPTIONS = {

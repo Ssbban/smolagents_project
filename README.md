@@ -48,8 +48,8 @@ smolagents_project/
 - `IPISubmitSpec`
 - `WorkflowArtifact`
 
-The agent can still collect missing information conversationally, but script
-generation now goes through deterministic spec validation before writing files.
+The agent can collect missing information conversationally, but script
+generation goes through deterministic spec validation before writing files.
 
 MACE parameter synchronization is handled by `tools/mace_cli_schema.py`. It
 fetches the official MACE `arg_parser.py`, parses `add_argument` calls with
@@ -128,6 +128,3 @@ for reproducible examples.
 - `main.py` reads the API key only from `SMOLAGENTS_API_KEY`.
 - Tool-generated scripts are previewed before submission.
 - MACE and i-PI generators validate structured specs before writing files.
-- Historical commits may still contain removed secrets or large files. Rotate
-  any exposed keys and rewrite repository history before publishing a clean
-  public release.

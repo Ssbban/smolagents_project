@@ -13,7 +13,6 @@ def render_ipi_submit_script(spec: IPISubmitSpec) -> str:
 
     header = [
         "#!/bin/bash -l",
-        "set -euo pipefail",
         f"#SBATCH --job-name={cluster.job_name}",
         f"#SBATCH --time={cluster.time}",
         f"#SBATCH --partition={cluster.partition}",

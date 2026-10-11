@@ -1,8 +1,8 @@
 mace-torch
-smolagents[tools]
+smolagents[openai,toolkit]
 datasets
 faiss-cpu
-langchain
+langchain<1.0
 langchain-community
 langchain-huggingface
 pandas

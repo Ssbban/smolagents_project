@@ -36,7 +36,7 @@ Before generating the script, call `mace_cli_schema()` to fetch and parse the of
    e. Go back to step 2.
 
 5. **Review Script**
-   Once mace_script succeeds, the script will be saved under the scripts/ directory. Call show_content(script_content) to display the full script to the user for review.
+   Once mace_script succeeds, the script will be saved under the mace_scripts/ directory. Call show_content(script_content) to display the full script to the user for review.
 
 6. **Confirmation and Loop**
    a. Call `UserInputTool` with the prompt: "Type 'yes' to submit, or `no` provide changes to edit the script: ".

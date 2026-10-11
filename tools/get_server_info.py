@@ -39,15 +39,15 @@ def _get_conda_envs() -> List[str]:
 def _get_available_modules() -> List[str]:
     """Gets a list of available environment modules."""
     try:
-        # The `module avail` command often prints to stderr.
+        # `module` is a shell function and `module avail` often prints to stderr.
         result = subprocess.run(
-            ["module", "avail"],
+            ["bash", "-lc", "module avail 2>&1"],
             capture_output=True,
             text=True,
             check=True,
         )
         # Filter out empty lines from the output.
-        return [line.strip() for line in result.stderr.splitlines() if line.strip()]
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
 
@@ -69,32 +69,33 @@ def slurm_config() -> Dict[str, Any]:
     Uses `sinfo`, `command`, `conda`, and `module` under the hood. Requires them to be in PATH.
     """
 
-    # Query partitions: sinfo with format PartitionName|State|AllocNodes|TotalNodes|Timelimit
+    # Query partitions: sinfo with format PartitionName|Avail|Nodes(A/I/O/T)|Timelimit
     p = subprocess.run(
-        ["sinfo", "--noheader", "-o", "%P|%T|%a|%D|%l"], capture_output=True, text=True
+        ["sinfo", "--noheader", "-o", "%P|%a|%F|%l"], capture_output=True, text=True
     )
     partitions: List[Dict[str, Any]] = []
     for line in p.stdout.strip().splitlines():
         parts = line.split("|")
-        if len(parts) != 5:
+        if len(parts) != 4:
             continue
-        name, state, alloc, total, timelimit = parts
-        try:
-            alloc_n = int(alloc) if alloc.isdigit() else 0
-            total_n = int(total) if total.isdigit() else 0
-        except ValueError:
-            alloc_n = total_n = 0
+        name, state, node_counts, timelimit = parts
+        name = name.rstrip("*")
+        counts = node_counts.split("/")
+        if len(counts) == 4 and all(c.isdigit() for c in counts):
+            avail_n, total_n = int(counts[1]), int(counts[3])
+        else:
+            avail_n = total_n = 0
         partitions.append(
             {
                 "name": name,
                 "state": state,
-                "alloc_nodes": alloc_n,
+                "avail_nodes": avail_n,
                 "total_nodes": total_n,
                 "max_time": timelimit,
             }
         )
 
-    # Query nodes: sinfo with format NodeList|State|CPUsState|Gres
+    # Query nodes: sinfo with format NodeList|State|CPUs|Gres
     p2 = subprocess.run(
         ["sinfo", "--noheader", "-N", "-o", "%N|%T|%c|%G"],
         capture_output=True,

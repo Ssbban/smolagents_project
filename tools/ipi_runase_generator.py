@@ -21,7 +21,7 @@ CALCULATOR_FACTORIES = {
 def render_ase_client(spec: IPIASEClientSpec) -> str:
     spec.validate(supported_calculators=CALCULATOR_IMPORTS)
     calc_name_lower = spec.calculator.lower()
-    kwargs_str = json.dumps(dict(spec.calculator_kwargs), indent=4)
+    kwargs_str = repr(dict(spec.calculator_kwargs))
     imports_line = CALCULATOR_IMPORTS[calc_name_lower]
     factory_line = CALCULATOR_FACTORIES[calc_name_lower]
 

@@ -49,7 +49,6 @@ def show_content(script: any) -> str:
     """
     if isinstance(script, dict):
         script_content = script.get("script_content", "")
-        return script_content
     else:
         script_content = str(script)
 
