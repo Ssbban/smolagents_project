@@ -1,4 +1,4 @@
-"""MACE_script: the 23 cases of the v1 baseline (U4 3.2) with their outcomes now, and the MACE pre-flight check."""
+"""MACE_script: the 23 cases measured on v1 (docs/V1_DEFECTS.md) with their outcomes now, and the MACE pre-flight check."""
 
 from pathlib import Path
 

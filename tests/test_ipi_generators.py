@@ -14,7 +14,7 @@ SUBMIT = dict(job_name="ipi_water", time="02:00:00", partition="cpu", memory="8G
 CLUSTER_UNKNOWN = "cluster facts unknown"
 TEMPLATES = Path(__file__).resolve().parents[1] / "tools" / "ipi_templates"
 LANGEVIN = "02-NVT-Langevin"
-# Arguments of the nine input cases of the v1 baseline (U4 section 3.3).
+# Arguments of the nine input cases measured on v1 (docs/V1_DEFECTS.md).
 BASELINE = {
     "I00_valid_temperature": {"modifications": {"set_T": {"xpath": "./system/ensemble/temperature", "text": "350"}}},
     "I01_xpath_no_match": {"modifications": {"x": {"xpath": ".//does_not_exist", "text": "1"}}},
@@ -49,7 +49,7 @@ def line(text, key):
     return re.search(rf"^{key}.*$", text, re.M)[0]
 
 
-# The nine input cases of the v1 baseline (U4 section 3.3), with the outcome they have now.
+# The nine input cases measured on v1 (docs/V1_DEFECTS.md), with the outcome they have now.
 CASES = {
     "I00_valid_temperature": None,
     "I01_xpath_no_match": "'.//does_not_exist' is not an editable path",
