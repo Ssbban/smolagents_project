@@ -1,0 +1,3 @@
+# Text files are stored and checked out with LF line endings on every platform:
+# the tool generates shell scripts for Linux clusters and the tests compare bytes.
+* text=auto eol=lf
