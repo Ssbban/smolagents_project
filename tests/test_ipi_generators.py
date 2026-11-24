@@ -163,6 +163,17 @@ def test_job_script_fails_on_errors_waits_for_the_socket_and_needs_no_source_che
     assert "runs/" not in text and b"\r\n" not in Path(job["script_path"]).read_bytes()
 
 
+@pytest.mark.parametrize("template, client, submit", [
+    ("00-NVE", None, {}),
+    ("09-PINVT-for-dynamics", {"device": "cuda"}, {"num_force_providers": 4}),
+])  # fmt: skip
+def test_job_scripts_are_valid_bash_and_clear_a_stale_socket(water, bash_syntax_ok, template, client, submit):
+    _, _, job = make_job(template, client=client, **submit)
+    assert bash_syntax_ok(job["script_path"])
+    script = job["script_content"]
+    assert script.index('rm -f "$SOCKET"') < script.index("i-pi input.xml")
+
+
 def test_optional_environment_script(water):
     _, _, job = make_job(ipi_env_path="~/i-pi/env.sh")
     assert "source ~/i-pi/env.sh\nsource /opt/conda/etc/profile.d/conda.sh" in job["script_content"]

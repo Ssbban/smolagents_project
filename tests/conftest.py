@@ -1,5 +1,8 @@
+import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +42,36 @@ def session(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(session_module, "_current", None)
     return session_module.start_session("runs")
+
+
+def _find_bash():
+    """A real bash for syntax checks. On Windows only the one shipped with Git: a bare `bash` may start WSL."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        exec_path = subprocess.run([git, "--exec-path"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    root = Path(exec_path).parents[2]  # <root>/mingw64/libexec/git-core
+    return next((str(p) for p in (root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe") if p.is_file()), None)
+
+
+BASH = _find_bash()
+
+
+@pytest.fixture
+def bash_syntax_ok():
+    """Returns a function: True when `bash -n` accepts the script. Skips the test when there is no bash."""
+    if BASH is None:
+        pytest.skip("no bash available for a syntax check")
+
+    def check(script_path):
+        return subprocess.run([BASH, "-n", str(script_path)], capture_output=True, timeout=30).returncode == 0
+
+    return check
 
 
 @pytest.fixture

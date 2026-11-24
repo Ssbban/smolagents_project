@@ -58,6 +58,11 @@ def test_m00_valid_script(session, mace17):
     assert mace17 == [("/opt/conda/etc/profile.d/conda.sh", "mace")]  # the table of the job's environment
 
 
+def test_the_script_is_valid_bash(session, mace17, bash_syntax_ok):
+    assert bash_syntax_ok(run()["script_path"])
+    assert bash_syntax_ok(run(train_file="~/data/train.xyz", device="cpu", gpus_per_node=0)["script_path"])
+
+
 def test_n3_the_script_stops_at_the_first_failing_command(session, mace17):
     lines = run()["script_content"].splitlines()
     last_sbatch = max(i for i, line in enumerate(lines) if line.startswith("#SBATCH"))
