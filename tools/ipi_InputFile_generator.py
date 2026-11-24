@@ -1,13 +1,12 @@
-import os
 import re
-from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 import xml.etree.ElementTree as ET
 
 import requests
 from smolagents.tools import tool
 
-from tools.specs import IPIInputSpec, IPI_TEMPLATE_URLS, WorkflowArtifact
+from tools.session import get_session
+from tools.specs import IPIInputSpec, IPI_TEMPLATE_URLS
 
 
 IPI_TEMPLATE_BASE_URL = (
@@ -221,6 +220,9 @@ def ipi_InputFile_generator(
     """
     Generate an i-PI input file from a template using exact XML operations.
 
+    Each call writes input.xml into a new job bundle and returns {"script_path", "bundle",
+    "script_content"}; pass script_path to ipi_runase_generator and ipi_submit_generator.
+
     Args:
         template_type: Type of simulation template to use as base.
         modifications: Named XML operations. Each operation must either include
@@ -229,7 +231,7 @@ def ipi_InputFile_generator(
         simulation_attrs: Optional validated attributes for the root simulation tag.
 
     Returns:
-        Dictionary with script_path and script_content.
+        Dictionary with script_path, bundle and script_content.
     """
     spec = IPIInputSpec(
         template_type=template_type,
@@ -248,17 +250,7 @@ def ipi_InputFile_generator(
             root.set(attr, str(value))
         xml_content = ET.tostring(root, encoding="unicode")
 
-    os.makedirs("ipi_scripts", exist_ok=True)
-    timestamp = datetime.now().strftime("%m%d_%H%M%S")
-    script_path = f"ipi_scripts/input_{timestamp}.xml"
-    artifact = WorkflowArtifact(
-        kind="ipi_input_xml",
-        path=script_path,
-        content=xml_content,
-        metadata={"template_type": spec.template_type},
-    ).validate()
-
-    with open(artifact.path, "w", encoding="utf-8") as file:
-        file.write(artifact.content)
-
-    return {"script_path": artifact.path, "script_content": artifact.content}
+    session = get_session()
+    bundle = session.new_bundle("ipi")
+    artifact = session.write_artifact(bundle, "input.xml", xml_content, "ipi_input")
+    return {"script_path": artifact.path, "bundle": artifact.bundle, "script_content": xml_content}

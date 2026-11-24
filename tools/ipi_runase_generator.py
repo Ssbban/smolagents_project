@@ -1,11 +1,10 @@
 import json
-import os
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from smolagents.tools import tool
 
-from tools.specs import IPIASEClientSpec, WorkflowArtifact
+from tools.session import get_session, unused_name
+from tools.specs import IPIASEClientSpec, check, raise_problems
 
 
 CALCULATOR_IMPORTS = {
@@ -21,7 +20,8 @@ CALCULATOR_FACTORIES = {
 def render_ase_client(spec: IPIASEClientSpec) -> str:
     spec.validate(supported_calculators=CALCULATOR_IMPORTS)
     calc_name_lower = spec.calculator.lower()
-    kwargs_str = repr(dict(spec.calculator_kwargs))
+    # Through JSON so that only plain values reach repr(): an object's own __repr__ could write any code here.
+    kwargs_str = repr(json.loads(json.dumps(dict(spec.calculator_kwargs))))
     imports_line = CALCULATOR_IMPORTS[calc_name_lower]
     factory_line = CALCULATOR_FACTORIES[calc_name_lower]
 
@@ -54,6 +54,7 @@ print("i-PI simulation finished. ASE client is shutting down.")
 
 @tool
 def ipi_runase_generator(
+    ipi_input_path: str,
     calculator: str,
     unixsocket_name: str = "driver",
     init_xyz_path: str = "init.xyz",
@@ -63,39 +64,34 @@ def ipi_runase_generator(
     """
     Generate a validated ASE socket client script for an i-PI simulation.
 
+    The client is written as run_ase.py into the job bundle of the given i-PI input;
+    the result is {"script_path", "bundle", "script_content"}.
     The socket name must match the i-PI input XML forcefield address.
 
     Args:
+        ipi_input_path: script_path returned by ipi_InputFile_generator for this simulation.
         calculator: ASE calculator name. Supported values are mace_mp and mace_off.
         unixsocket_name: UNIX socket name that must match the i-PI forcefield address.
-        init_xyz_path: Path to the initial ASE-readable structure file.
+        init_xyz_path: Path of the initial ASE-readable structure on the cluster; a relative path is read from the job's bundle directory.
         use_stress: Whether the ASE client should provide stress to i-PI.
-        calculator_kwargs: Keyword arguments passed to the selected calculator factory.
+        calculator_kwargs: Keyword arguments passed to the selected calculator factory (plain values only).
 
     Returns:
-        Dictionary with script_path and script_content.
+        Dictionary with script_path, bundle and script_content.
     """
+    session = get_session()
     spec = IPIASEClientSpec(
         calculator=calculator,
         unixsocket_name=unixsocket_name,
         init_xyz_path=init_xyz_path,
         use_stress=use_stress,
         calculator_kwargs=calculator_kwargs or {},
-    ).validate(supported_calculators=CALCULATOR_IMPORTS)
+    )
+    problems = spec.problems(supported_calculators=CALCULATOR_IMPORTS)
+    ipi_input = check(problems, session.require_artifact, ipi_input_path, "ipi_input")
+    raise_problems("ipi_runase_generator", problems)
 
     script_content = render_ase_client(spec)
-
-    os.makedirs("ipi_scripts", exist_ok=True)
-    timestamp = datetime.now().strftime("%m%d_%H%M%S")
-    script_path = f"ipi_scripts/run_ase_{timestamp}.py"
-    artifact = WorkflowArtifact(
-        kind="ipi_ase_client",
-        path=script_path,
-        content=script_content,
-        metadata={"calculator": spec.calculator, "unixsocket_name": spec.unixsocket_name},
-    ).validate()
-
-    with open(artifact.path, "w", encoding="utf-8") as file:
-        file.write(artifact.content)
-
-    return {"script_path": artifact.path, "script_content": artifact.content}
+    name = unused_name(ipi_input.bundle, "run_ase.py")
+    artifact = session.write_artifact(ipi_input.bundle, name, script_content, "ase_client")
+    return {"script_path": artifact.path, "bundle": artifact.bundle, "script_content": script_content}

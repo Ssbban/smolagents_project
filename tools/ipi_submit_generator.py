@@ -1,10 +1,10 @@
-import os
-from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any, Dict, Optional
 
 from smolagents.tools import tool
 
-from tools.specs import ClusterSpec, IPISubmitSpec, WorkflowArtifact
+from tools.session import Artifact, Session, get_session, unused_name
+from tools.specs import ClusterSpec, IPISubmitSpec, check, raise_problems
 
 
 def render_ipi_submit_script(spec: IPISubmitSpec) -> str:
@@ -61,10 +61,30 @@ def render_ipi_submit_script(spec: IPISubmitSpec) -> str:
     return "\n".join(script_lines)
 
 
+def _bundle_files(session: Session, ipi_input_path: str, ase_path: Optional[str]) -> tuple[Artifact, Artifact]:
+    """The i-PI input and the ASE client of one bundle; ValueError if they do not belong together."""
+    ipi_input = session.require_artifact(ipi_input_path, "ipi_input")
+    if ase_path:
+        client = session.require_artifact(ase_path, "ase_client")
+        if client.bundle != ipi_input.bundle:
+            raise ValueError(
+                f"{client.path} is not in the bundle of {ipi_input.path}; generate the client with "
+                f"ipi_runase_generator(ipi_input_path={ipi_input.path!r}, ...)"
+            )
+        return ipi_input, client
+    clients = [a for a in session.artifacts if a.kind == "ase_client" and a.bundle == ipi_input.bundle]
+    if not clients:
+        raise ValueError(
+            f"the bundle of {ipi_input.path} has no ASE client yet; call "
+            f"ipi_runase_generator(ipi_input_path={ipi_input.path!r}, ...) first"
+        )
+    return ipi_input, clients[-1]
+
+
 @tool
 def ipi_submit_generator(
-    ipi_input_path: str = "input.xml",
-    ase_path: str = "run_ase.py",
+    ipi_input_path: str,
+    ase_path: Optional[str] = None,
     job_name: str = "I-PI",
     time: str = "24:00:00",
     partition: str = None,
@@ -83,11 +103,15 @@ def ipi_submit_generator(
     """
     Generate a validated Slurm script for running i-PI with one or more ASE clients.
 
+    The script is written as job.sh into the bundle of the i-PI input and refers to the
+    input and the client by bare file name. The result is {"script_path", "bundle",
+    "script_content", "num_force_providers"}; submit it with slurm_submit(script_path).
+
     Args:
-        ipi_input_path: Path to the generated i-PI input XML file.
-        ase_path: Path to the generated ASE socket client script.
+        ipi_input_path: script_path returned by ipi_InputFile_generator.
+        ase_path: script_path returned by ipi_runase_generator for that input; default: the latest client in its bundle.
         job_name: Slurm job name.
-        time: Slurm time limit in HH:MM:SS format.
+        time: Slurm time limit, e.g. "24:00:00" or "2-00:00:00" (any sbatch form).
         partition: Slurm partition name.
         nodes: Number of Slurm nodes.
         ntasks: Number of Slurm tasks.
@@ -99,11 +123,14 @@ def ipi_submit_generator(
         sleep_time: Seconds to wait after starting i-PI before launching clients.
         multi_run: Whether to launch multiple ASE force-provider clients.
         num_force_providers: Number of ASE force-provider clients to launch.
-        additional_slurm_args: Additional Slurm arguments as key-value pairs.
+        additional_slurm_args: Additional Slurm options as long option name -> single value, e.g. {"account": "proj1"}.
 
     Returns:
-        Dictionary with script_path, script_content and num_force_providers.
+        Dictionary with script_path, bundle, script_content and num_force_providers.
     """
+    session = get_session()
+    problems: list[str] = []
+    ipi_input, client = check(problems, _bundle_files, session, ipi_input_path, ase_path) or (None, None)
     cluster = ClusterSpec(
         job_name=job_name,
         time=time,
@@ -118,34 +145,21 @@ def ipi_submit_generator(
     )
     spec = IPISubmitSpec(
         cluster=cluster,
-        ipi_input_path=ipi_input_path,
-        ase_path=ase_path,
+        ipi_input_path=PurePosixPath(ipi_input.path).name if ipi_input else "input.xml",
+        ase_path=PurePosixPath(client.path).name if client else "run_ase.py",
         ipi_env_path=ipi_env_path,
         sleep_time=sleep_time,
         multi_run=multi_run,
         num_force_providers=num_force_providers,
-    ).validate()
+    )
+    raise_problems("ipi_submit_generator", problems + spec.problems())
 
     script_content = render_ipi_submit_script(spec)
-
-    os.makedirs("ipi_scripts", exist_ok=True)
-    timestamp = datetime.now().strftime("%m%d_%H%M%S")
-    script_path = f"ipi_scripts/{spec.cluster.job_name}_{timestamp}.sh"
-    artifact = WorkflowArtifact(
-        kind="ipi_slurm_script",
-        path=script_path,
-        content=script_content,
-        metadata={
-            "job_name": spec.cluster.job_name,
-            "num_force_providers": spec.num_force_providers,
-        },
-    ).validate()
-
-    with open(artifact.path, "w", encoding="utf-8") as file:
-        file.write(artifact.content)
-
+    name = unused_name(ipi_input.bundle, "job.sh")
+    artifact = session.write_artifact(ipi_input.bundle, name, script_content, "ipi_submit")
     return {
         "script_path": artifact.path,
-        "script_content": artifact.content,
+        "bundle": artifact.bundle,
+        "script_content": script_content,
         "num_force_providers": spec.num_force_providers,
     }

@@ -1,7 +1,5 @@
 import json
-import os
 import shlex
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from smolagents.tools import tool
@@ -11,7 +9,8 @@ from tools.mace_cli_schema import (
     load_mace_cli_schema,
     validate_mace_value,
 )
-from tools.specs import ClusterSpec, MACEJobSpec, WorkflowArtifact
+from tools.session import get_session
+from tools.specs import ClusterSpec, MACEJobSpec, raise_problems
 
 
 def _format_cli_value(value: Any) -> str:
@@ -159,11 +158,14 @@ def MACE_script(
 
     The tool builds a MACEJobSpec first, fetches and parses the official MACE
     arg_parser.py schema, validates every MACE CLI option against that schema,
-    then renders the bash script.
+    then renders the bash script. Invalid input raises one error that lists every
+    problem; fix all of them before calling again. Each call writes a new job
+    bundle directory containing job.sh and returns {"script_path", "bundle",
+    "script_content"}; submit it with slurm_submit(script_path).
 
     Args:
         job_name: Slurm job name.
-        time: Slurm time limit in HH:MM:SS format.
+        time: Slurm time limit, e.g. "24:00:00" or "2-00:00:00" (any sbatch form).
         partition: Slurm partition name.
         nodes: Number of Slurm nodes.
         ntasks: Number of Slurm tasks.
@@ -171,12 +173,12 @@ def MACE_script(
         mail_user: Optional email address for Slurm notifications.
         mail_type: Optional Slurm mail type such as ALL, FAIL, BEGIN or END.
         memory: Slurm memory allocation, for example 32G.
-        additional_args_slurm: Additional Slurm arguments as key-value pairs.
+        additional_args_slurm: Additional Slurm options as long option name -> single value, e.g. {"account": "proj1"}.
         conda_env: Conda environment to activate before running MACE.
         conda_activation_path: Path to conda.sh.
         name: MACE run name passed to --name.
-        train_file: Path to the MACE training XYZ file.
-        valid_file: Optional path to the MACE validation XYZ file.
+        train_file: Absolute path of the MACE training XYZ file (the job runs in its bundle directory).
+        valid_file: Optional absolute path of the MACE validation XYZ file.
         valid_fraction: Optional validation fraction. Mutually exclusive with valid_file.
         E0s: Isolated atom energy setting passed to --E0s.
         max_num_epochs: Maximum number of training epochs.
@@ -185,7 +187,7 @@ def MACE_script(
         additional_flag_args: Additional MACE switch flags without values.
 
     Returns:
-        Dictionary with script_path and script_content.
+        Dictionary with script_path, bundle and script_content.
     """
     cluster = ClusterSpec(
         job_name=job_name,
@@ -212,21 +214,18 @@ def MACE_script(
         device=device,
         additional_args=additional_args or {},
         additional_flag_args=additional_flag_args or [],
-    ).validate()
+    )
+    problems = spec.problems()
+    schema = load_mace_cli_schema()
+    try:
+        validate_mace_cli_options(spec, schema)
+    except ValueError as error:
+        problems.append(str(error))
+    raise_problems("MACE_script", problems)
 
-    script_content = render_mace_script(spec)
+    script_content = render_mace_script(spec, schema)
 
-    os.makedirs("mace_scripts", exist_ok=True)
-    timestamp = datetime.now().strftime("%m%d_%H%M%S")
-    script_path = f"mace_scripts/{spec.cluster.job_name}_{timestamp}.sh"
-    artifact = WorkflowArtifact(
-        kind="mace_slurm_script",
-        path=script_path,
-        content=script_content,
-        metadata={"job_name": spec.cluster.job_name, "device": spec.device},
-    ).validate()
-
-    with open(artifact.path, "w", encoding="utf-8") as file:
-        file.write(artifact.content)
-
-    return {"script_path": artifact.path, "script_content": artifact.content}
+    session = get_session()
+    bundle = session.new_bundle(spec.cluster.job_name)
+    artifact = session.write_artifact(bundle, "job.sh", script_content, "mace_script")
+    return {"script_path": artifact.path, "bundle": artifact.bundle, "script_content": script_content}

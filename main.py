@@ -1,9 +1,9 @@
-import os
-
+import smolagents
 from smolagents import CodeAgent, DuckDuckGoSearchTool, PlanningStep, UserInputTool
 from smolagents.models import OpenAIServerModel
 
-from tools.RetrieverTool import RetrieverTool, vectordb
+from config import Settings, SettingsError
+from tools.RetrieverTool import RetrieverTool
 from tools.customize_plan import interrupt_after_plan
 from tools.get_server_info import slurm_config
 from tools.github_fetch import github_fetch
@@ -12,23 +12,21 @@ from tools.ipi_runase_generator import ipi_runase_generator
 from tools.ipi_submit_generator import ipi_submit_generator
 from tools.mace_cli_schema import mace_cli_schema
 from tools.mace_script import MACE_script
+from tools.preflight import preflight
+from tools.session import start_session
 from tools.show_content import show_content
+from tools.slurm_status import job_status
 from tools.slurm_submit import slurm_submit
 
 
-def build_model() -> OpenAIServerModel:
-    model_id = os.environ.get("SMOLAGENTS_MODEL_ID", "deepseek-chat")
-    api_base = os.environ.get("SMOLAGENTS_API_BASE", "https://api.deepseek.com/v1")
-    api_key = os.environ.get("SMOLAGENTS_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "SMOLAGENTS_API_KEY is required. Set it in your shell before running the agent."
-        )
+def build_model(settings: Settings) -> OpenAIServerModel:
+    extra = {} if settings.temperature is None else {"temperature": settings.temperature}
     return OpenAIServerModel(
-        model_id=model_id,
-        api_base=api_base,
-        api_key=api_key,
+        model_id=settings.model_id,
+        api_base=settings.api_base,
+        api_key=settings.api_key,
         flatten_messages_as_text=True,
+        **extra,
     )
 
 
@@ -38,7 +36,14 @@ def load_prompt(path: str) -> str:
 
 
 def main():
-    model = build_model()
+    try:
+        settings = Settings.from_env()
+    except SettingsError as error:
+        raise SystemExit(f"Error: {error}") from None
+    session = start_session(settings.runs_dir)
+    session.trace.emit("session_start", settings=settings.public(), smolagents=smolagents.__version__)
+    print(f"Session {session.id}: generated files and the trace are in {session.dir.as_posix()}/")
+    model = build_model(settings)
 
     mace_instruction = load_prompt("prompts/mace_instruction.txt")
     ipi_instruction = load_prompt("prompts/ipi_instruction.txt")
@@ -49,7 +54,9 @@ def main():
         mace_cli_schema,
         MACE_script,
         show_content,
+        preflight,
         slurm_submit,
+        job_status,
         slurm_config,
         DuckDuckGoSearchTool(),
         UserInputTool(),
@@ -58,7 +65,7 @@ def main():
     ipi_tools = [
         DuckDuckGoSearchTool(),
         UserInputTool(),
-        RetrieverTool(vectordb=vectordb),
+        RetrieverTool(),
         ipi_template_schema,
         ipi_InputFile_generator,
         ipi_runase_generator,
@@ -66,13 +73,16 @@ def main():
         show_content,
         github_fetch,
         slurm_config,
+        preflight,
+        slurm_submit,
+        job_status,
     ]
 
     ipi_agent = CodeAgent(
         name="ipi_agent",
         tools=ipi_tools,
         model=model,
-        max_steps=20,
+        max_steps=settings.max_steps,
         instructions=ipi_instruction,
         additional_authorized_imports=[
             "tempfile",
@@ -87,7 +97,7 @@ def main():
         name="mace_agent",
         tools=mace_tools,
         model=model,
-        max_steps=20,
+        max_steps=settings.max_steps,
         instructions=mace_instruction,
         additional_authorized_imports=[
             "tempfile",
@@ -102,9 +112,9 @@ def main():
         name="manager_agent",
         tools=[],
         model=model,
-        max_steps=20,
+        max_steps=settings.max_steps,
         instructions=manager_instruction,
-        planning_interval=10,
+        planning_interval=settings.planning_interval,
         step_callbacks={PlanningStep: interrupt_after_plan},
         additional_authorized_imports=[
             "tempfile",

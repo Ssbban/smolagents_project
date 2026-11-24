@@ -1,56 +1,28 @@
+from pathlib import Path
+from typing import Any
+
 from smolagents.tools import tool
-# from smolagents.memory import ActionStep
 
-
-# def show_script_after_mace_call(memory_step, agent):
-#     """
-#     Step callback that checks if the MACE_script tool was just called
-#     and, if so, displays the script that was generated.
-#     """
-#     if isinstance(memory_step, ActionStep) and memory_step.tool_calls:
-#         for tool_call in memory_step.tool_calls:
-#             if (
-#                 tool_call.name == "python_interpreter"
-#                 and "MACE_script(" in tool_call.arguments
-#             ):
-#                 print("\n" + "=" * 60)
-#                 print("Generated script:")
-#                 print("=" * 60)
-
-#                 action_result = memory_step.action_output
-
-#                 # Check if the result is a dictionary with the expected key
-#                 if (
-#                     isinstance(action_result, dict)
-#                     and "script_content" in action_result
-#                 ):
-#                     script_content = action_result["script_content"]
-#                     print(script_content)
-#                 else:
-#                     # Fallback for unexpected format
-#                     print(
-#                         "Callback could not find 'script_content' in the tool output. Full output:"
-#                     )
-#                     print(action_result)
-
-#                 print("=" * 60)
-#                 break
+from tools.session import get_session
 
 
 @tool
-def show_content(script: any) -> str:
+def show_content(script: Any) -> str:
     """
-    Return the given script content for display to the user.
+    Print a generated file for the person at the terminal and return its text.
+
+    This only displays; it is not a confirmation. slurm_submit shows the script and asks the person itself.
 
     Args:
-        script (any): Full text of a generated Slurm script.
+        script (any): A generator result dict, the script_path of a generated file, or the text itself.
     Returns:
-        str: The same script_content for the agent to show.
+        str: The text that was shown.
     """
     if isinstance(script, dict):
         script_content = script.get("script_content", "")
     else:
-        script_content = str(script)
+        artifact = get_session().find_artifact(str(script)) if "\n" not in str(script) else None
+        script_content = Path(artifact.path).read_text(encoding="utf-8") if artifact else str(script)
 
     print("\n" + "=" * 60)
     print("Generated script:")
