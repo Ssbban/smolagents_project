@@ -4,10 +4,29 @@ from pathlib import Path
 from smolagents.tools import tool
 
 from tools import approval
-from tools.preflight import SCRIPT_KINDS, run_preflight
-from tools.session import Session, get_session
+from tools.preflight import NEEDS, SCRIPT_KINDS, run_preflight
+from tools.session import Artifact, Session, get_session
 
 SBATCH_TIMEOUT = 60
+
+
+def _shown_to_the_person(session: Session, artifact: Artifact) -> tuple[str, list[str]]:
+    """The script, then every file of its bundle that it runs, each under its own heading;
+    one line (size, start of the sha256) for each other file of the bundle."""
+    script = Path(artifact.path).read_text(encoding="utf-8")
+    text, others = script, []
+    for member in session.artifacts:
+        if member.bundle != artifact.bundle or member.path == artifact.path:
+            continue
+        path = Path(member.path)
+        if member.kind in NEEDS.get(artifact.kind, ()) and path.name in script.split():
+            text += "" if text.endswith("\n") else "\n"
+            text += f"{approval.RULE}\n{member.path} (used by this job)\n{approval.RULE}\n"
+            text += path.read_text(encoding="utf-8")
+        else:
+            others.append(f"also in the bundle, not shown: {member.path} "
+                          f"({path.stat().st_size} bytes, sha256 {member.sha256[:12]})")
+    return text, others
 
 
 def _submit(session: Session, script_path: str) -> dict:
@@ -27,8 +46,8 @@ def _submit(session: Session, script_path: str) -> dict:
     if errors:
         return {"status": "refused", "reason": "pre-flight checks failed", "errors": errors}
 
-    text = Path(artifact.path).read_text(encoding="utf-8")
-    notes = [p.message for p in problems if p.severity == "warning"]
+    text, others = _shown_to_the_person(session, artifact)
+    notes = others + [p.message for p in problems if p.severity == "warning"]
     decision = approval.ask(f"Job script {artifact.path}", text, notes)
     session.trace.emit("approval", script_path=artifact.path, approved=decision.approved, feedback=decision.feedback)
     if not decision.approved:
@@ -45,8 +64,9 @@ def _submit(session: Session, script_path: str) -> dict:
     except FileNotFoundError:
         return {"status": "failed", "reason": "sbatch was not found on this machine; submit from a Slurm login node"}
     except subprocess.TimeoutExpired:
-        return {"status": "unknown", "reason": f"sbatch did not answer in {SBATCH_TIMEOUT} s; a job may exist - "
-                "check with job_status before submitting again"}
+        return {"status": "unknown", "reason": f"sbatch did not answer in {SBATCH_TIMEOUT} s, so there is no job id; "
+                "a job may exist all the same - ask the person to check their queue (squeue --me) before any new "
+                "submission"}
     if result.returncode != 0:
         reason = (result.stderr or result.stdout).strip() or f"sbatch exited with code {result.returncode}"
         return {"status": "failed", "reason": reason}
@@ -64,8 +84,8 @@ def slurm_submit(script_path: str) -> dict:
     """
     Submit a job script generated in this session to Slurm with sbatch.
 
-    The tool itself runs the pre-flight checks, shows the script to the person at the
-    terminal and asks them; do not ask for confirmation yourself. Only scripts written by
+    The tool itself runs the pre-flight checks, shows the script and the files it runs to the
+    person at the terminal and asks them; do not ask for confirmation yourself. Only scripts written by
     MACE_script or ipi_submit_generator, unchanged since, are accepted, and each one once.
 
     Result: a dict with "status":
@@ -73,7 +93,7 @@ def slurm_submit(script_path: str) -> dict:
     "refused" (with reason, maybe errors) - fix the reason, usually by generating the script again;
     "declined" (with feedback) - the person said no; their feedback says what to change;
     "failed" (with reason) - sbatch rejected the job or is not installed;
-    "unknown" (with reason) - a job may exist; check before submitting again.
+    "unknown" (with reason) - a job may exist without a job id; the person must check the queue first.
 
     Args:
         script_path: script_path returned by MACE_script or ipi_submit_generator.

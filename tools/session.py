@@ -17,7 +17,7 @@ from tools.trace import Trace, utc_now
 
 @dataclass(frozen=True)
 class Artifact:
-    kind: str  # "mace_script" | "ipi_input" | "ase_client" | "ipi_submit"
+    kind: str  # "mace_script" | "ipi_input" | "structure" | "ase_client" | "ipi_submit"
     path: str  # POSIX, relative to the working directory
     sha256: str
     bundle: str  # directory of the job this file belongs to (POSIX, relative)

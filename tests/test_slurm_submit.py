@@ -139,7 +139,9 @@ def test_sbatch_timeout_is_unknown(session, script, fake_run, asked):
     fake_run({"sbatch": subprocess.TimeoutExpired("sbatch", 60)})
     asked(Decision(True))
     result = slurm_submit(script_path=script().path)
-    assert result["status"] == "unknown" and "check with job_status" in result["reason"]
+    # Without a job id job_status cannot help; the person has to look at the queue.
+    assert result["status"] == "unknown" and "job_status" not in result["reason"]
+    assert "no job id" in result["reason"] and "check their queue" in result["reason"]
     assert session.jobs == []
 
 

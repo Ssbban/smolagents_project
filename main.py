@@ -1,38 +1,44 @@
+"""Command-line session: each request is one turn of the manager agent."""
+
 import smolagents
-from smolagents import CodeAgent, DuckDuckGoSearchTool, PlanningStep, UserInputTool
-from smolagents.models import OpenAIServerModel
 
+from agents import build_agents, build_model
 from config import Settings, SettingsError
-from tools.RetrieverTool import RetrieverTool
-from tools.customize_plan import interrupt_after_plan
-from tools.get_server_info import slurm_config
-from tools.github_fetch import github_fetch
-from tools.ipi_InputFile_generator import ipi_InputFile_generator, ipi_template_schema
-from tools.ipi_runase_generator import ipi_runase_generator
-from tools.ipi_submit_generator import ipi_submit_generator
-from tools.mace_cli_schema import mace_cli_schema
-from tools.mace_script import MACE_script
-from tools.preflight import preflight
-from tools.session import start_session
-from tools.show_content import show_content
-from tools.slurm_status import job_status
-from tools.slurm_submit import slurm_submit
+from tools.customize_plan import UserCancelled
+from tools.session import Session, start_session
+
+HISTORY_TURNS = 3
+ANSWER_CHARS = 1000  # of each earlier answer passed on in "history"
 
 
-def build_model(settings: Settings) -> OpenAIServerModel:
-    extra = {} if settings.temperature is None else {"temperature": settings.temperature}
-    return OpenAIServerModel(
-        model_id=settings.model_id,
-        api_base=settings.api_base,
-        api_key=settings.api_key,
-        flatten_messages_as_text=True,
-        **extra,
-    )
+def run_turn(manager, session: Session, request: str, history: list[dict]) -> str:
+    """Run one request; print what happened and return it as one line for the history."""
+    mark = session.mark()
+    session.trace.emit("turn_start", request=request)
+    answer = None
+    try:
+        result = manager.run(
+            request, additional_args={"session": session.snapshot(), "history": history}, return_full_result=True
+        )
+        answer = result.output
+        outcome = "answered" if result.state == "success" else "stopped at the step limit (fallback answer)"
+    except UserCancelled:
+        outcome = "cancelled at the plan review"
+    except KeyboardInterrupt:
+        outcome = "interrupted (Ctrl+C)"
+    except Exception as error:  # AgentError, or a provider error in the planning call (smolagents does not wrap it)
+        outcome = f"failed: {type(error).__name__}: {error}"
+    produced = session.since(mark)
+    session.trace.emit("turn_end", outcome=outcome, answer=answer, **produced)
 
-
-def load_prompt(path: str) -> str:
-    with open(path, encoding="utf-8") as file:
-        return file.read()
+    print(f"\nOutcome: {outcome}")
+    if answer is not None:
+        print(f"Agent> {answer}")
+    for artifact in produced["artifacts"]:
+        print(f"  file written: {artifact['path']} ({artifact['kind']})")
+    for job in produced["jobs"]:
+        print(f"  job submitted: {job['job_id']} from {job['script']}")
+    return outcome if answer is None else f"{outcome}: {str(answer)[:ANSWER_CHARS]}"
 
 
 def main():
@@ -42,106 +48,23 @@ def main():
         raise SystemExit(f"Error: {error}") from None
     session = start_session(settings.runs_dir)
     session.trace.emit("session_start", settings=settings.public(), smolagents=smolagents.__version__)
+    manager = build_agents(build_model(settings), settings)
     print(f"Session {session.id}: generated files and the trace are in {session.dir.as_posix()}/")
-    model = build_model(settings)
+    print("Agent: Hello! I can help with MACE training and i-PI simulations. Type 'exit' to quit.")
 
-    mace_instruction = load_prompt("prompts/mace_instruction.txt")
-    ipi_instruction = load_prompt("prompts/ipi_instruction.txt")
-    manager_instruction = load_prompt("prompts/manager_instruction.txt")
-
-    mace_tools = [
-        github_fetch,
-        mace_cli_schema,
-        MACE_script,
-        show_content,
-        preflight,
-        slurm_submit,
-        job_status,
-        slurm_config,
-        DuckDuckGoSearchTool(),
-        UserInputTool(),
-    ]
-
-    ipi_tools = [
-        DuckDuckGoSearchTool(),
-        UserInputTool(),
-        RetrieverTool(),
-        ipi_template_schema,
-        ipi_InputFile_generator,
-        ipi_runase_generator,
-        ipi_submit_generator,
-        show_content,
-        github_fetch,
-        slurm_config,
-        preflight,
-        slurm_submit,
-        job_status,
-    ]
-
-    ipi_agent = CodeAgent(
-        name="ipi_agent",
-        tools=ipi_tools,
-        model=model,
-        max_steps=settings.max_steps,
-        instructions=ipi_instruction,
-        additional_authorized_imports=[
-            "tempfile",
-            "subprocess",
-            "os",
-            "typing",
-        ],
-        description="i-PI input file generator agent, it can help users to generate i-PI input file.",
-    )
-
-    mace_agent = CodeAgent(
-        name="mace_agent",
-        tools=mace_tools,
-        model=model,
-        max_steps=settings.max_steps,
-        instructions=mace_instruction,
-        additional_authorized_imports=[
-            "tempfile",
-            "subprocess",
-            "os",
-            "json",
-        ],
-        description="MACE training agent, it can help users to train MACE model on their dataset.",
-    )
-
-    manager_agent = CodeAgent(
-        name="manager_agent",
-        tools=[],
-        model=model,
-        max_steps=settings.max_steps,
-        instructions=manager_instruction,
-        planning_interval=settings.planning_interval,
-        step_callbacks={PlanningStep: interrupt_after_plan},
-        additional_authorized_imports=[
-            "tempfile",
-            "subprocess",
-            "os",
-        ],
-        managed_agents=[ipi_agent, mace_agent],
-    )
-    print(
-        "Agent: Hello! I'm here to guide you through MACE training and I-PI. Type 'exit' or `q` to quit."
-    )
-
+    history: list[dict] = []
     while True:
-        user_query = input("User> ").strip()
-        if user_query.lower() in {"exit", "quit", "q"}:
-            print("Agent: Goodbye!")
-            break
         try:
-            print("\nAgent starting execution...")
-            response = manager_agent.run(user_query, reset=False)
-            print("\nTask completed successfully!")
-            print("\nAgent>", response)
-        except Exception as error:
-            if "interrupted" in str(error).lower():
-                print("\nAgent execution was cancelled by user.")
-            else:
-                print(f"\nError: {error}")
+            request = input("User> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not request:
+            continue
+        if request.lower() in {"exit", "quit", "q"}:
+            break
+        outcome = run_turn(manager, session, request, history[-HISTORY_TURNS:])
+        history.append({"request": request, "outcome": outcome})
+    print("\nAgent: Goodbye!")
 
 
 if __name__ == "__main__":

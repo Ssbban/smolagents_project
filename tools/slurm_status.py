@@ -106,16 +106,21 @@ def job_status(job_id: str, wait_seconds: int = 0) -> dict:
     if not job_id.isdigit():
         raise ValueError(f"job_id must be the number slurm_submit returned, e.g. '123456'; got {job_id!r}")
     deadline = _clock() + min(max(int(wait_seconds or 0), 0), MAX_WAIT_SECONDS)
+    session = get_session()
     try:
         status = _query(job_id)
-        while status["state"] not in FINISHED and _clock() < deadline:
+        # Slurm may lag right after a submission from here; an id unknown everywhere will not appear by waiting.
+        unknown_here = status["state"] == "UNKNOWN" and session.find_job(job_id) is None
+        if unknown_here:
+            status["reason"] = ("neither squeue nor sacct knows this job, and it was not submitted in this "
+                                "session - check the job id")
+        while not unknown_here and status["state"] not in FINISHED and _clock() < deadline:
             _sleep(min(POLL_SECONDS, deadline - _clock()))
             status = _query(job_id)
     except _NoSlurm:
         status = {"state": "UNKNOWN", "reason": "squeue was not found on this machine", "elapsed": None,
                   "exit_code": None}
     result = {"job_id": job_id, **status, "finished": status["state"] in FINISHED, "log_tail": _log_tail(job_id)}
-    session = get_session()
     job = session.find_job(job_id)
     if job is not None and status["state"] != "UNKNOWN":
         job.state = status["state"]
