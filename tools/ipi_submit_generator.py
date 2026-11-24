@@ -1,64 +1,60 @@
-from pathlib import PurePosixPath
+import re
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 
 from smolagents.tools import tool
 
+from tools.ipi_check import SOCKETS_DIR, check_input, links
+from tools.preflight import Problem, register
 from tools.session import Artifact, Session, get_session, unused_name
 from tools.specs import ClusterSpec, IPISubmitSpec, check, raise_problems
+
+SOCKET_WAIT_SECONDS = 300
+CLIENT_LINE_RE = {key: re.compile(rf'^{key} = "(.*)"$', re.M) for key in ("UNIX_SOCKET", "INIT_XYZ", "DEVICE")}
+SCRIPT_LINE_RE = {
+    "socket": re.compile(rf"^SOCKET={re.escape(SOCKETS_DIR)}(\S+)$", re.M),
+    "clients": re.compile(r"^CLIENTS=(\d+)$", re.M),
+    "input": re.compile(r"^i-pi (\S+)", re.M),
+    "client": re.compile(r"^\s*python (\S+) &$", re.M),
+}
 
 
 def render_ipi_submit_script(spec: IPISubmitSpec) -> str:
     spec.validate()
     cluster = spec.cluster
-
-    header = [
-        "#!/bin/bash -l",
-        f"#SBATCH --job-name={cluster.job_name}",
-        f"#SBATCH --time={cluster.time}",
-        f"#SBATCH --partition={cluster.partition}",
-        f"#SBATCH --nodes={cluster.nodes}",
-        f"#SBATCH --ntasks={cluster.ntasks}",
-        f"#SBATCH --mem={cluster.memory}",
-    ]
-    if cluster.gpus_per_node:
-        header.append(f"#SBATCH --gres=gpu:{cluster.gpus_per_node}")
-    for key, value in cluster.additional_slurm_args.items():
-        if value is not None and value != "":
-            header.append(f"#SBATCH --{key}={value}")
-
-    script_lines = header + [
+    header = cluster.sbatch_header(cluster.gpus_per_node)
+    environment = cluster.environment(*filter(None, [spec.ipi_env_path]))
+    body = [
+        f"SOCKET={SOCKETS_DIR}{spec.socket_address}",
+        f"CLIENTS={spec.num_force_providers}",
         "",
-        f"source {spec.ipi_env_path}",
-        f"source {cluster.conda_activation_path}",
-        f"conda activate {cluster.conda_env}",
-        "",
+        "# A socket file left by an earlier run of this job (requeue, crash) would stop i-PI from starting.",
+        'rm -f "$SOCKET"',
         f"i-pi {spec.ipi_input_path} &> log.i-pi &",
         "IPI_PID=$!",
-        f"sleep {spec.sleep_time}",
+        f"for second in $(seq {SOCKET_WAIT_SECONDS}); do",
+        '    [ -S "$SOCKET" ] && break',
+        '    kill -0 "$IPI_PID" 2>/dev/null || break',
+        "    sleep 1",
+        "done",
+        'if [ ! -S "$SOCKET" ]; then',
+        '    echo "i-PI did not open $SOCKET; see log.i-pi" >&2',
+        '    kill "$IPI_PID" 2>/dev/null || true',
+        "    exit 1",
+        "fi",
         "",
+        "CLIENT_PIDS=()",
+        'for client in $(seq "$CLIENTS"); do',
+        f"    python {spec.ase_path} &",
+        '    CLIENT_PIDS+=("$!")',
+        "done",
+        "# A failing client or i-PI ends the job with its error code (set -e).",
+        'for pid in "${CLIENT_PIDS[@]}"; do',
+        '    wait "$pid"',
+        "done",
+        'wait "$IPI_PID"',
     ]
-
-    if spec.multi_run:
-        script_lines.extend(
-            [
-                "CLIENT_PIDS=()",
-                f"for x in {{1..{spec.num_force_providers}}}",
-                "do",
-                f"    python {spec.ase_path} &",
-                "    CLIENT_PIDS+=(\"$!\")",
-                "done",
-                "",
-                "for pid in \"${CLIENT_PIDS[@]}\"",
-                "do",
-                "    wait \"$pid\"",
-                "done",
-            ]
-        )
-    else:
-        script_lines.append(f"python {spec.ase_path}")
-
-    script_lines.extend(["", "wait \"$IPI_PID\""])
-    return "\n".join(script_lines)
+    return "\n".join(header + ["", "set -euo pipefail", ""] + environment + [""] + body) + "\n"
 
 
 def _bundle_files(session: Session, ipi_input_path: str, ase_path: Optional[str]) -> tuple[Artifact, Artifact]:
@@ -81,6 +77,15 @@ def _bundle_files(session: Session, ipi_input_path: str, ase_path: Optional[str]
     return ipi_input, clients[-1]
 
 
+def _client_value(client: Artifact, key: str) -> Optional[str]:
+    match = CLIENT_LINE_RE[key].search(Path(client.path).read_text(encoding="utf-8"))
+    return match[1] if match else None
+
+
+def _max_clients(facts: Dict[str, Any]) -> int:
+    return facts.get("nbeads", 1) * facts.get("replicas", 1)
+
+
 @tool
 def ipi_submit_generator(
     ipi_input_path: str,
@@ -90,22 +95,20 @@ def ipi_submit_generator(
     partition: str = None,
     nodes: int = 1,
     ntasks: int = 1,
-    gpus_per_node: int = 1,
+    gpus_per_node: Optional[int] = None,
     memory: str = "20G",
     conda_env: str = None,
     conda_path: str = None,
-    ipi_env_path: str = "~/i-pi/env.sh",
-    sleep_time: int = 30,
-    multi_run: bool = False,
+    ipi_env_path: Optional[str] = None,
     num_force_providers: int = 1,
     additional_slurm_args: Optional[Dict[str, Any]] = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
-    Generate a validated Slurm script for running i-PI with one or more ASE clients.
+    Write the Slurm script job.sh that runs i-PI and its ASE client(s) in the bundle of an i-PI input.
 
-    The script is written as job.sh into the bundle of the i-PI input and refers to the
-    input and the client by bare file name. The result is {"script_path", "bundle",
-    "script_content", "num_force_providers"}; submit it with slurm_submit(script_path).
+    The script waits for i-PI's socket before it starts the clients and fails when i-PI or a client
+    fails. Result: {"script_path", "bundle", "script_content", "num_force_providers", "gpus_per_node"};
+    submit it with slurm_submit(script_path).
 
     Args:
         ipi_input_path: script_path returned by ipi_InputFile_generator.
@@ -115,22 +118,29 @@ def ipi_submit_generator(
         partition: Slurm partition name.
         nodes: Number of Slurm nodes.
         ntasks: Number of Slurm tasks.
-        gpus_per_node: Number of GPUs per node. Use 0 for CPU jobs.
+        gpus_per_node: GPUs to request; default: 1 for a cuda client, 0 for a cpu client.
         memory: Slurm memory allocation, for example 20G.
-        conda_env: Conda environment to activate before running the ASE client.
+        conda_env: Conda environment with i-PI, ASE and the calculator installed.
         conda_path: Path to conda.sh.
-        ipi_env_path: Path to the i-PI environment setup script.
-        sleep_time: Seconds to wait after starting i-PI before launching clients.
-        multi_run: Whether to launch multiple ASE force-provider clients.
-        num_force_providers: Number of ASE force-provider clients to launch.
+        ipi_env_path: Optional script to source before conda (e.g. an i-PI source checkout's env.sh); usually not needed.
+        num_force_providers: Number of client processes. One is enough for a single classical system; up to
+            beads x replicas of the input (path integrals, replica exchange) can work in parallel.
         additional_slurm_args: Additional Slurm options as long option name -> single value, e.g. {"account": "proj1"}.
-
-    Returns:
-        Dictionary with script_path, bundle, script_content and num_force_providers.
     """
     session = get_session()
     problems: list[str] = []
     ipi_input, client = check(problems, _bundle_files, session, ipi_input_path, ase_path) or (None, None)
+    facts: Dict[str, Any] = {}
+    socket, device = "driver", "cpu"
+    if ipi_input:
+        xml = Path(ipi_input.path).read_text(encoding="utf-8")
+        result = check_input(xml)
+        problems += [f"{ipi_input.path}: {problem}" for problem in result["problems"]]
+        facts, socket = result["facts"], links(xml)["socket"] or socket
+    if client:
+        device = _client_value(client, "DEVICE") or device
+    if gpus_per_node is None:
+        gpus_per_node = 1 if device == "cuda" else 0
     cluster = ClusterSpec(
         job_name=job_name,
         time=time,
@@ -147,10 +157,11 @@ def ipi_submit_generator(
         cluster=cluster,
         ipi_input_path=PurePosixPath(ipi_input.path).name if ipi_input else "input.xml",
         ase_path=PurePosixPath(client.path).name if client else "run_ase.py",
-        ipi_env_path=ipi_env_path,
-        sleep_time=sleep_time,
-        multi_run=multi_run,
+        socket_address=socket,
+        ipi_env_path=ipi_env_path or None,
         num_force_providers=num_force_providers,
+        max_force_providers=_max_clients(facts),
+        device=device,
     )
     raise_problems("ipi_submit_generator", problems + spec.problems())
 
@@ -162,4 +173,42 @@ def ipi_submit_generator(
         "bundle": artifact.bundle,
         "script_content": script_content,
         "num_force_providers": spec.num_force_providers,
+        "gpus_per_node": gpus_per_node,
     }
+
+
+def check_ipi_job(artifact: Artifact, session: Session) -> list[Problem]:
+    """Pre-flight for an i-PI job: the input still loads, socket and structure agree, the client count fits."""
+    script = Path(artifact.path).read_text(encoding="utf-8")
+    members = {PurePosixPath(a.path).name: a for a in session.artifacts if a.bundle == artifact.bundle}
+    found = {key: pattern.search(script) for key, pattern in SCRIPT_LINE_RE.items()}
+    ipi_input = members.get(found["input"][1]) if found["input"] else None
+    client = members.get(found["client"][1]) if found["client"] else None
+    if not ipi_input or not client or ipi_input.kind != "ipi_input" or client.kind != "ase_client":
+        return []  # check_bundle reports a script that does not run a generated input and client
+    xml = Path(ipi_input.path).read_text(encoding="utf-8")
+    result, wiring = check_input(xml), links(xml)
+    problems = [Problem("error", f"{ipi_input.path} does not load in i-PI: {p}") for p in result["problems"]]
+    if wiring["socket"] is None:
+        problems.append(Problem("error", f"{ipi_input.path} has no single unix socket"))
+    elif _client_value(client, "UNIX_SOCKET") != wiring["socket"]:
+        problems.append(Problem("error", f"{client.path} connects to another socket than {ipi_input.path}"))
+    elif not found["socket"] or found["socket"][1] != wiring["socket"]:
+        problems.append(Problem("error", f"{artifact.path} waits for another socket than {ipi_input.path} opens"))
+    if _client_value(client, "INIT_XYZ") != wiring["structure"]:
+        problems.append(Problem("error", f"{client.path} reads another structure than {ipi_input.path}"))
+    clients = int(found["clients"][1]) if found["clients"] else 1
+    if "replicas" in result["facts"] and clients > _max_clients(result["facts"]):
+        problems.append(Problem("error", f"{clients} clients for {_max_clients(result['facts'])} beads x replicas"))
+    structure = wiring["structure"] or ""
+    if "/" not in structure:
+        staged = members.get(structure)
+        if staged is None or staged.kind != "structure":
+            problems.append(Problem("error", f"the structure {structure!r} is not a staged file of {artifact.bundle}"))
+    elif not Path(structure).is_file():
+        problems.append(Problem("warning", f"the structure {structure} is not readable here; it must exist on the "
+                                           "compute nodes"))
+    return problems
+
+
+register("ipi_submit", check_ipi_job)

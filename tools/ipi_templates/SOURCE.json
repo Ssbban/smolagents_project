@@ -1,0 +1,64 @@
+{
+  "repository": "https://github.com/venkatkapil24/MLIPs-with-iPI",
+  "commit": "55d6ef7630d0dc068b86500554007187e7d2878e",
+  "license": "MIT",
+  "retrieved": "2026-11-24",
+  "note": "Every input.xml and LICENSE was fetched from the raw URL below on 2026-11-24 and is byte-identical to it. The upstream init.xyz is not vendored: every job stages its own structure.",
+  "files": {
+    "LICENSE": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/LICENSE",
+      "sha256": "603e42e006747fcdcfcce527ffa61955fe10622f1e85f934a6fd5ed27903c91d",
+      "verified_against_url": true
+    },
+    "00-NVE/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/00-NVE/input.xml",
+      "sha256": "97fb0a0ba927bf2121a08ef7faf9fcf36a3d24ff07fbd1981aa44b142810d0db",
+      "verified_against_url": true
+    },
+    "01-NVT-for-dynamics/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/01-NVT-for-dynamics/input.xml",
+      "sha256": "097a1c8e09d5148a77a0515cf6b20dadfcba8db55d270b17d307cab3dcbb91da",
+      "verified_against_url": true
+    },
+    "02-NVT-Langevin/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/02-NVT-Langevin/input.xml",
+      "sha256": "91f5a92146eb38675b0e82c86854502ed80d6c8b11e039ac57499348dc291147",
+      "verified_against_url": true
+    },
+    "03-NVT-SVR/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/03-NVT-SVR/input.xml",
+      "sha256": "e90874d17df4005c44fedd347cf61a0fc8568d78a53b372871a66a88079c4b2c",
+      "verified_against_url": true
+    },
+    "04-NVT-GLE/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/04-NVT-GLE/input.xml",
+      "sha256": "8af3aecbbd85f0f15f9985d2c62164664f56e8106579dffe4bdf5b35c8200116",
+      "verified_against_url": true
+    },
+    "05-NPT-isotropic-BZP/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/05-NPT-isotropic-BZP/input.xml",
+      "sha256": "682954237bd44e74dbf72cd0ac73e09f683f13851c674e3493f96a244956889d",
+      "verified_against_url": true
+    },
+    "06-flexible-MTTK/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/06-flexible-MTTK/input.xml",
+      "sha256": "d37c07bfaa83206238cfcc051219106b1bba6e8d328ba343982414f72b123ffe",
+      "verified_against_url": true
+    },
+    "07-REMD-NVT/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/07-REMD-NVT/input.xml",
+      "sha256": "1ecc3198b8667efc2bbf1b024dc0cbdb732ccb263322c586ba7311d2a22609a4",
+      "verified_against_url": true
+    },
+    "08-REMD-NPT/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/08-REMD-NPT/input.xml",
+      "sha256": "261776104406015ca5436491c3ac8013223ae405b75e4059b1ca8d23dcb15cb6",
+      "verified_against_url": true
+    },
+    "09-PINVT-for-dynamics/input.xml": {
+      "url": "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/55d6ef7630d0dc068b86500554007187e7d2878e/09-PINVT-for-dynamics/input.xml",
+      "sha256": "39949233cff96d55a3cb5a628065b831797352a33a5d1fcfa4e1305d2e810c54",
+      "verified_against_url": true
+    }
+  }
+}

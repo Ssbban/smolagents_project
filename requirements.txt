@@ -1,12 +1,13 @@
 smolagents[openai,toolkit]==1.26.0
 python-dotenv==1.2.4
+pyyaml==6.0.4
 requests==2.34.2
+# i-PI: checks generated inputs and answers ipi_tag_help
+ipi==3.3.1
 # i-PI documentation retriever (built on first use)
-datasets==5.2.0
 faiss-cpu==1.16.0
 langchain==0.3.30
 langchain-community==0.3.31
 langchain-huggingface==0.3.1
 sentence-transformers==6.3.0
-tqdm==4.70.1
 transformers==5.24.0

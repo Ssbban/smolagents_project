@@ -1,32 +1,55 @@
-import re
-from typing import Any, Dict, List, Mapping, Optional
-import xml.etree.ElementTree as ET
+"""i-PI input files from the templates vendored in tools/ipi_templates (pinned upstream commit, see SOURCE.json)."""
 
-import requests
+import json
+import xml.etree.ElementTree as ET
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, List, Mapping, Optional
+
 from smolagents.tools import tool
 
+from tools.ipi_check import check_input, forcefields
 from tools.session import get_session
-from tools.specs import IPIInputSpec, IPI_TEMPLATE_URLS
+from tools.specs import SAFE_NAME_RE, IPIInputSpec, _require_safe_path, check, raise_problems
 
-
-IPI_TEMPLATE_BASE_URL = (
-    "https://raw.githubusercontent.com/venkatkapil24/MLIPs-with-iPI/refs/heads/main"
-)
-XML_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
-
-
-def _template_url(template_type: str) -> str:
-    if template_type not in IPI_TEMPLATE_URLS:
-        raise ValueError(
-            f"Unknown template type: {template_type}. Available options: {list(IPI_TEMPLATE_URLS.keys())}"
-        )
-    return f"{IPI_TEMPLATE_BASE_URL}/{IPI_TEMPLATE_URLS[template_type]}"
+TEMPLATE_DIR = Path(__file__).with_name("ipi_templates")
+CATALOG: Dict[str, Dict[str, str]] = json.loads((TEMPLATE_DIR / "catalog.json").read_text(encoding="utf-8"))
+SOURCE: Dict[str, Any] = json.loads((TEMPLATE_DIR / "SOURCE.json").read_text(encoding="utf-8"))
+# Text formats ASE recognises by file name (i-PI's mode='ase' and the client both read with ase.io.read).
+STRUCTURE_SUFFIXES = {".xyz", ".extxyz", ".cif", ".pdb", ".vasp", ".poscar", ".xsf", ".gen", ".res"}
+STRUCTURE_NAMES = {"POSCAR", "CONTCAR"}
 
 
 def _select_template(template_type: str) -> str:
-    response = requests.get(_template_url(template_type), timeout=30)
-    response.raise_for_status()
-    return response.text
+    return (TEMPLATE_DIR / template_type / "input.xml").read_text(encoding="utf-8")
+
+
+def _tool_owned(path: str, tag: str) -> bool:
+    """The socket, the structure file and the force field reference are written by the tools, never edited."""
+    return tag.startswith("ff") or path.endswith(("/initialize/file", "/forces/force"))
+
+
+def _element_paths(root: ET.Element) -> List[Dict[str, Any]]:
+    """Every editable element of a template: exact xpath, tag, attributes and text."""
+    paths: List[Dict[str, Any]] = []
+
+    def visit(element: ET.Element, path: str) -> None:
+        if path != ".":
+            text = (element.text or "").strip()
+            paths.append({"xpath": path, "tag": element.tag, "attrs": dict(element.attrib), "text": text or None})
+        totals: Dict[str, int] = {}
+        for child in element:
+            totals[child.tag] = totals.get(child.tag, 0) + 1
+        counts: Dict[str, int] = {}
+        for child in element:
+            counts[child.tag] = counts.get(child.tag, 0) + 1
+            child_path = f"{path}/{child.tag}"
+            if totals[child.tag] > 1:
+                child_path = f"{child_path}[{counts[child.tag]}]"
+            if not _tool_owned(child_path, child.tag):
+                visit(child, child_path)
+
+    visit(root, ".")
+    return paths
 
 
 def _require_mapping(name: str, value: Any) -> Mapping[str, Any]:
@@ -36,7 +59,7 @@ def _require_mapping(name: str, value: Any) -> Mapping[str, Any]:
 
 
 def _require_xml_name(name: str, value: Any) -> str:
-    if not isinstance(value, str) or not XML_NAME_RE.fullmatch(value):
+    if not isinstance(value, str) or not SAFE_NAME_RE.fullmatch(value) or not value[0].isalpha():
         raise ValueError(f"{name} must be a valid XML tag or attribute name.")
     return value
 
@@ -44,213 +67,158 @@ def _require_xml_name(name: str, value: Any) -> str:
 def _normalize_attrs(name: str, attrs: Any) -> Dict[str, str]:
     if attrs is None:
         return {}
-    attr_map = _require_mapping(name, attrs)
-    return {
-        _require_xml_name(f"{name} key", key): str(value)
-        for key, value in attr_map.items()
-    }
+    return {_require_xml_name(f"{name} key", key): str(value) for key, value in _require_mapping(name, attrs).items()}
 
 
-def _findall(root: ET.Element, xpath: str) -> List[ET.Element]:
-    if xpath == ".":
-        return [root]
-    try:
-        matches = root.findall(xpath)
-    except SyntaxError as error:
-        raise ValueError(f"Invalid XPath '{xpath}': {error}") from error
-    if xpath == ".//simulation" and root.tag == "simulation" and root not in matches:
-        matches = [root] + matches
-    return matches
-
-
-def _single_match(root: ET.Element, xpath: str, *, target: str) -> ET.Element:
-    matches = _findall(root, xpath)
-    if not matches:
-        raise ValueError(f"{target} XPath did not match the selected template: {xpath}")
-    if len(matches) > 1:
-        raise ValueError(
-            f"{target} XPath matched {len(matches)} elements. Use a more specific XPath: {xpath}"
-        )
-    return matches[0]
-
-
-def _add_child_element(parent: ET.Element, field_config: Mapping[str, Any]) -> None:
-    tag = _require_xml_name("field tag", field_config.get("tag"))
-    attrs = _normalize_attrs("field attrs", field_config.get("attrs"))
-    text = field_config.get("text")
-    fields = field_config.get("fields", [])
+def _add_child_element(parent: ET.Element, block: Mapping[str, Any]) -> None:
+    tag = _require_xml_name("tag", block.get("tag"))
+    if tag.startswith("ff"):
+        raise ValueError(f"<{tag}> cannot be added: the force field is the template's socket, set by the tool")
+    fields = block.get("fields") or []
     if not isinstance(fields, list):
-        raise ValueError("field fields must be a list.")
-
-    child = ET.SubElement(parent, tag)
-    for attr_name, attr_value in attrs.items():
-        child.set(attr_name, attr_value)
-    if text is not None:
-        child.text = str(text)
+        raise ValueError("fields must be a list.")
+    child = ET.SubElement(parent, tag, _normalize_attrs("attrs", block.get("attrs")))
+    if block.get("text") is not None:
+        child.text = str(block["text"])
     for index, subfield in enumerate(fields):
         _add_child_element(child, _require_mapping(f"field {index}", subfield))
 
 
-def _handle_xpath_update(
-    root: ET.Element, operation_name: str, operation: Mapping[str, Any]
-) -> None:
-    xpath = operation.get("xpath")
-    if not isinstance(xpath, str) or not xpath.strip():
-        raise ValueError(f"{operation_name}.xpath is required.")
-    attrs = _normalize_attrs(f"{operation_name}.attrs", operation.get("attrs"))
-    has_text = "text" in operation
-    if not attrs and not has_text:
-        raise ValueError(f"{operation_name} must include text or attrs.")
-
-    update_all = bool(operation.get("all", False))
-    matches = _findall(root, xpath)
-    if not matches:
-        raise ValueError(f"{operation_name}.xpath did not match the selected template: {xpath}")
-    if len(matches) > 1 and not update_all:
-        raise ValueError(
-            f"{operation_name}.xpath matched {len(matches)} elements. Set all=True only when every match should be updated."
-        )
-
-    for element in matches:
-        for attr_name, attr_value in attrs.items():
-            element.set(attr_name, attr_value)
-        if has_text:
+def _apply(root: ET.Element, editable: set, name: str, operation: Any) -> None:
+    """One named operation: an update of an editable path, or a block appended under one (or under '.')."""
+    operation = _require_mapping(name, operation)
+    hint = "use an xpath that ipi_template_schema(template_type) lists for this template"
+    if "xpath" in operation and "parent_xpath" in operation:
+        raise ValueError(f"{name} must be either an xpath update or an append block, not both.")
+    if "xpath" in operation:
+        xpath = str(operation["xpath"])
+        if xpath not in editable:
+            raise ValueError(f"{name}.xpath {xpath!r} is not an editable path of this template; {hint}")
+        attrs = _normalize_attrs(f"{name}.attrs", operation.get("attrs"))
+        if not attrs and "text" not in operation:
+            raise ValueError(f"{name} must include text or attrs.")
+        element = root.find(xpath)
+        element.attrib.update(attrs)
+        if "text" in operation:
             element.text = str(operation["text"])
+    elif "parent_xpath" in operation and "tag" in operation:
+        parent_xpath = str(operation["parent_xpath"])
+        if parent_xpath != "." and parent_xpath not in editable:
+            raise ValueError(f"{name}.parent_xpath {parent_xpath!r} is not '.' or an editable path; {hint}")
+        try:
+            _add_child_element(root if parent_xpath == "." else root.find(parent_xpath), operation)
+        except ValueError as error:
+            raise ValueError(f"{name}: {error}") from None
+    else:
+        raise ValueError(f"{name} must include either xpath for an update or parent_xpath plus tag for an append block.")
 
 
-def _handle_append_block(
-    root: ET.Element, operation_name: str, operation: Mapping[str, Any]
-) -> None:
-    parent_xpath = operation.get("parent_xpath")
-    if not isinstance(parent_xpath, str) or not parent_xpath.strip():
-        raise ValueError(f"{operation_name}.parent_xpath is required.")
-    parent = _single_match(root, parent_xpath, target=f"{operation_name}.parent_xpath")
-
-    block = {
-        "tag": operation.get("tag"),
-        "attrs": operation.get("attrs", {}),
-        "text": operation.get("text"),
-        "fields": operation.get("fields", []),
-    }
-    _add_child_element(parent, block)
-
-
-def _modify_xml_template(xml_content: str, parameters: Mapping[str, Any]) -> str:
-    root = ET.fromstring(xml_content)
-
-    for operation_name, raw_operation in parameters.items():
-        operation = _require_mapping(str(operation_name), raw_operation)
-        has_xpath = "xpath" in operation
-        has_block = "parent_xpath" in operation and "tag" in operation
-        if has_xpath and has_block:
-            raise ValueError(
-                f"{operation_name} must be either an XPath update or an append block, not both."
-            )
-        if has_xpath:
-            _handle_xpath_update(root, str(operation_name), operation)
-        elif has_block:
-            _handle_append_block(root, str(operation_name), operation)
-        else:
-            raise ValueError(
-                f"{operation_name} must include either xpath for an exact update or parent_xpath plus tag for an explicit append block."
-            )
-
-    return ET.tostring(root, encoding="unicode")
+def _structure(path: Any) -> tuple:
+    """(text, name) of a structure file readable here, or (None, path) for an absolute path on the cluster."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("structure_path is required: the initial structure i-PI and the client start from")
+    name = PurePosixPath(path.strip().replace("\\", "/")).name
+    if PurePosixPath(name).suffix.lower() not in STRUCTURE_SUFFIXES and name not in STRUCTURE_NAMES:
+        raise ValueError(f"structure_path {path!r} is not a structure file ASE recognises by its name: use one of "
+                         f"{sorted(STRUCTURE_SUFFIXES)} or {sorted(STRUCTURE_NAMES)}")
+    local = Path(path.strip()).expanduser()
+    if local.is_file():
+        if not SAFE_NAME_RE.fullmatch(local.name):
+            raise ValueError(f"structure file name {local.name!r} may only contain letters, numbers, '.', '_' and '-'")
+        try:
+            return local.read_text(encoding="utf-8"), local.name
+        except UnicodeDecodeError:
+            raise ValueError(f"structure_path {path!r} is not a text structure file (xyz, extxyz, cif, ...)") from None
+    if not PurePosixPath(path).is_absolute():
+        raise ValueError(f"structure_path {path!r} is not a file on this machine; give a file readable here (it is "
+                         "copied into the job's bundle) or its absolute path on the cluster (i-PI does not expand '~')")
+    return None, _require_safe_path("structure_path", path)
 
 
-def _element_paths(root: ET.Element) -> List[Dict[str, Any]]:
-    paths: List[Dict[str, Any]] = []
-
-    def visit(element: ET.Element, path: str) -> None:
-        text = (element.text or "").strip()
-        paths.append(
-            {
-                "xpath": path,
-                "tag": element.tag,
-                "attrs": dict(element.attrib),
-                "text": text if text else None,
-            }
-        )
-        counts: Dict[str, int] = {}
-        totals: Dict[str, int] = {}
-        for child in list(element):
-            totals[child.tag] = totals.get(child.tag, 0) + 1
-        for child in list(element):
-            counts[child.tag] = counts.get(child.tag, 0) + 1
-            if path == ".":
-                child_path = f"./{child.tag}"
-            else:
-                child_path = f"{path}/{child.tag}"
-            if totals[child.tag] > 1:
-                child_path = f"{child_path}[{counts[child.tag]}]"
-            visit(child, child_path)
-
-    visit(root, ".")
-    return paths
+def socket_address(bundle: str) -> str:
+    """Unix socket name of a bundle: unique per session and bundle, so jobs on one node never share a socket."""
+    bundle_path = PurePosixPath(bundle)
+    return f"{bundle_path.parent.name}-{bundle_path.name}"
 
 
 @tool
-def ipi_template_schema(template_type: str) -> Dict[str, Any]:
+def ipi_template_schema(template_type: Optional[str] = None) -> Dict[str, Any]:
     """
-    Fetch an i-PI template and list exact XML paths that can be updated.
+    Without an argument: the catalogue of i-PI templates (name, what it simulates, when to use it).
+    With a template name: the paths of that template that ipi_InputFile_generator accepts in
+    modifications, as {"template_type", "source", "paths": [{"xpath", "tag", "attrs", "text"}],
+    "set_by_tool"}. Only these xpath values can be edited; the socket and the structure file are set
+    by the tools and are not listed.
 
     Args:
-        template_type: Type of i-PI template to inspect.
-
-    Returns:
-        Dictionary containing the source URL, root tag and exact element paths.
+        template_type: Template name from the catalogue; leave it out to get the catalogue.
     """
-    spec = IPIInputSpec(template_type=template_type).validate()
-    xml_content = _select_template(spec.template_type)
-    root = ET.fromstring(xml_content)
+    if template_type is None:
+        return {"templates": [{"name": name, **entry} for name, entry in CATALOG.items()]}
+    spec = IPIInputSpec(template_type=template_type).validate(templates=CATALOG)
     return {
         "template_type": spec.template_type,
-        "source_url": _template_url(spec.template_type),
-        "root_tag": root.tag,
-        "paths": _element_paths(root),
+        "source": f"{SOURCE['repository']} at commit {SOURCE['commit']}",
+        "paths": _element_paths(ET.fromstring(_select_template(spec.template_type))),
+        "set_by_tool": "the socket (<ffsocket>), the structure file (<initialize><file>), the force reference",
     }
 
 
 @tool
 def ipi_InputFile_generator(
     template_type: str,
+    structure_path: str,
     modifications: Optional[Dict[str, Any]] = None,
     simulation_attrs: Optional[Dict[str, Any]] = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
-    Generate an i-PI input file from a template using exact XML operations.
+    Write an i-PI input.xml into a new job bundle, from a template plus exact edits.
 
-    Each call writes input.xml into a new job bundle and returns {"script_path", "bundle",
-    "script_content"}; pass script_path to ipi_runase_generator and ipi_submit_generator.
+    The input is loaded by the installed i-PI before it is written: values i-PI cannot read, unknown
+    tags, tags written twice and implausible temperatures, time steps or pressures (a value without
+    units is read in atomic units) are reported with the value i-PI understood. All problems come in
+    one error; fix them and call again.
+    Result: {"script_path", "bundle", "script_content", "facts"}; facts = what i-PI read: temperature_K,
+    timestep_fs, pressure_bar (one entry per replica), nbeads, replicas, total_steps, forcefields,
+    structure. Pass script_path to ipi_runase_generator and ipi_submit_generator.
 
     Args:
-        template_type: Type of simulation template to use as base.
-        modifications: Named XML operations. Each operation must either include
-            xpath with text and/or attrs for exact updates, or parent_xpath plus
-            tag, attrs, text and fields for explicit append blocks.
-        simulation_attrs: Optional validated attributes for the root simulation tag.
-
-    Returns:
-        Dictionary with script_path, bundle and script_content.
+        template_type: Template name; ipi_template_schema() lists them.
+        structure_path: Initial structure, read by i-PI and the client with ASE (extended XYZ with Lattice=... for a
+            periodic cell). A file readable here is copied into the bundle; otherwise the absolute path on the cluster.
+        modifications: Named operations. An update is {"xpath": <path from ipi_template_schema>, "text": ...,
+            "attrs": {...}} and keeps the units attribute unless you change it; an append block is
+            {"parent_xpath": "." or a listed path, "tag": ..., "attrs": {...}, "text": ..., "fields": [blocks]}.
+        simulation_attrs: Attributes of the root <simulation> tag: verbosity, threading, mode, safe_stride, floatformat.
     """
-    spec = IPIInputSpec(
-        template_type=template_type,
-        modifications=modifications or {},
-        simulation_attrs=simulation_attrs or {},
-    ).validate()
-
-    xml_content = _select_template(spec.template_type)
-
-    if spec.modifications:
-        xml_content = _modify_xml_template(xml_content, spec.modifications)
-
-    if spec.simulation_attrs:
-        root = ET.fromstring(xml_content)
-        for attr, value in spec.simulation_attrs.items():
-            root.set(attr, str(value))
-        xml_content = ET.tostring(root, encoding="unicode")
-
     session = get_session()
+    spec = IPIInputSpec(template_type=template_type, modifications=modifications or {},
+                        simulation_attrs=simulation_attrs or {})  # fmt: skip
+    problems = spec.problems(templates=CATALOG)
+    if not problems:
+        root = ET.fromstring(_select_template(spec.template_type))
+        editable = {entry["xpath"] for entry in _element_paths(root)}
+        for name, operation in spec.modifications.items():
+            check(problems, _apply, root, editable, str(name), operation)
+        for attr, value in spec.simulation_attrs.items():
+            root.set(str(attr), str(value))
+    structure = check(problems, _structure, structure_path)
+    if not problems:
+        result = check_input(ET.tostring(root, encoding="unicode"))
+        problems += result["problems"]
+    raise_problems("ipi_InputFile_generator", problems)
+
     bundle = session.new_bundle("ipi")
+    text, name = structure
+    if text is not None:
+        name = PurePosixPath(session.write_artifact(bundle, name, text, "structure").path).name
+    address = socket_address(Path(bundle).as_posix())
+    for socket in root.iter("ffsocket"):
+        socket.find("address").text = address
+    for init in root.iter("initialize"):
+        for file in init.findall("file"):
+            file.text = name
+    xml_content = ET.tostring(root, encoding="unicode")
     artifact = session.write_artifact(bundle, "input.xml", xml_content, "ipi_input")
-    return {"script_path": artifact.path, "bundle": artifact.bundle, "script_content": xml_content}
+    facts = {**result["facts"], "forcefields": forcefields(root), "structure": name}
+    return {"script_path": artifact.path, "bundle": artifact.bundle, "script_content": xml_content, "facts": facts}

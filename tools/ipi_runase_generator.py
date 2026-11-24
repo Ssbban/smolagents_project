@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from smolagents.tools import tool
 
+from tools.ipi_check import links
 from tools.session import get_session, unused_name
 from tools.specs import IPIASEClientSpec, check, raise_problems
 
@@ -12,8 +14,8 @@ CALCULATOR_IMPORTS = {
     "mace_off": "from mace.calculators import mace_off",
 }
 CALCULATOR_FACTORIES = {
-    "mace_mp": "mace_mp(**calculator_kwargs)",
-    "mace_off": "mace_off(**calculator_kwargs)",
+    "mace_mp": "mace_mp(device=DEVICE, **CALCULATOR_KWARGS)",
+    "mace_off": "mace_off(device=DEVICE, **CALCULATOR_KWARGS)",
 }
 
 
@@ -31,6 +33,7 @@ from ase.calculators.socketio import SocketClient
 
 INIT_XYZ = {json.dumps(spec.init_xyz_path)}
 UNIX_SOCKET = {json.dumps(spec.unixsocket_name)}
+DEVICE = {json.dumps(spec.device)}
 USE_STRESS = {spec.use_stress}
 CALCULATOR_KWARGS = {kwargs_str}
 
@@ -38,8 +41,7 @@ CALCULATOR_KWARGS = {kwargs_str}
 print(f"Reading atoms object from '{{INIT_XYZ}}'.")
 atoms = read(INIT_XYZ, index=0)
 
-print(f"Setting up calculator: '{calc_name_lower}' with arguments: {{CALCULATOR_KWARGS}}")
-calculator_kwargs = CALCULATOR_KWARGS
+print(f"Setting up calculator: '{calc_name_lower}' on {{DEVICE}} with arguments: {{CALCULATOR_KWARGS}}")
 atoms.calc = {factory_line}
 
 print(f"Setting up socket client to connect to '{{UNIX_SOCKET}}'.")
@@ -56,40 +58,37 @@ print("i-PI simulation finished. ASE client is shutting down.")
 def ipi_runase_generator(
     ipi_input_path: str,
     calculator: str,
-    unixsocket_name: str = "driver",
-    init_xyz_path: str = "init.xyz",
+    device: str = "cpu",
     use_stress: bool = True,
     calculator_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """
-    Generate a validated ASE socket client script for an i-PI simulation.
+    Write the ASE socket client run_ase.py into the bundle of an i-PI input.
 
-    The client is written as run_ase.py into the job bundle of the given i-PI input;
-    the result is {"script_path", "bundle", "script_content"}.
-    The socket name must match the i-PI input XML forcefield address.
+    The socket address and the structure file are read from that input.xml, so the client always
+    connects to its own i-PI and starts from the same structure. The Slurm script requests a GPU
+    only for a cuda client. Result: {"script_path", "bundle", "script_content"}.
 
     Args:
         ipi_input_path: script_path returned by ipi_InputFile_generator for this simulation.
-        calculator: ASE calculator name. Supported values are mace_mp and mace_off.
-        unixsocket_name: UNIX socket name that must match the i-PI forcefield address.
-        init_xyz_path: Path of the initial ASE-readable structure on the cluster; a relative path is read from the job's bundle directory.
-        use_stress: Whether the ASE client should provide stress to i-PI.
-        calculator_kwargs: Keyword arguments passed to the selected calculator factory (plain values only).
-
-    Returns:
-        Dictionary with script_path, bundle and script_content.
+        calculator: ASE calculator name: mace_mp or mace_off.
+        device: Where the calculator runs: "cpu" or "cuda".
+        use_stress: Whether the client returns the stress; needed by every constant-pressure (NPT) template.
+        calculator_kwargs: Other keyword arguments of the calculator factory, e.g. {"model": "medium"} (plain values only).
     """
     session = get_session()
+    problems: list[str] = []
+    ipi_input = check(problems, session.require_artifact, ipi_input_path, "ipi_input")
+    wiring = links(Path(ipi_input.path).read_text(encoding="utf-8")) if ipi_input else {}
     spec = IPIASEClientSpec(
         calculator=calculator,
-        unixsocket_name=unixsocket_name,
-        init_xyz_path=init_xyz_path,
+        unixsocket_name=wiring.get("socket") or "driver",
+        init_xyz_path=wiring.get("structure") or "init.xyz",
         use_stress=use_stress,
         calculator_kwargs=calculator_kwargs or {},
+        device=device,
     )
-    problems = spec.problems(supported_calculators=CALCULATOR_IMPORTS)
-    ipi_input = check(problems, session.require_artifact, ipi_input_path, "ipi_input")
-    raise_problems("ipi_runase_generator", problems)
+    raise_problems("ipi_runase_generator", problems + spec.problems(supported_calculators=CALCULATOR_IMPORTS))
 
     script_content = render_ase_client(spec)
     name = unused_name(ipi_input.bundle, "run_ase.py")

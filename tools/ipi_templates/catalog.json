@@ -1,0 +1,42 @@
+{
+  "00-NVE": {
+    "what": "Constant energy ensemble (classical, no thermostat).",
+    "when": "Estimating classical dynamical properties."
+  },
+  "01-NVT-for-dynamics": {
+    "what": "Constant temperature ensemble with a weak global thermostat (SVR, tau 200 fs).",
+    "when": "Dynamical properties, with better ergodicity than NVE."
+  },
+  "02-NVT-Langevin": {
+    "what": "Constant temperature with a Langevin thermostat.",
+    "when": "Sampling solids or model systems."
+  },
+  "03-NVT-SVR": {
+    "what": "Constant temperature with a stochastic velocity rescaling thermostat.",
+    "when": "Sampling liquids."
+  },
+  "04-NVT-GLE": {
+    "what": "Constant temperature with a generalized Langevin equation (optimal-sampling) thermostat.",
+    "when": "Molecular gases with disparate modes or biphasic interfaces, where other thermostats are inefficient."
+  },
+  "05-NPT-isotropic-BZP": {
+    "what": "Constant temperature and pressure, isotropic cell fluctuations (Bussi-Zykova-Parrinello barostat).",
+    "when": "Fluids, which respond isotropically to pressure. The client must return the stress."
+  },
+  "06-flexible-MTTK": {
+    "what": "Constant temperature and pressure, flexible cell fluctuations (Martyna-Tuckerman-Tobias-Klein barostat).",
+    "when": "Solids, which can respond anisotropically to pressure. The client must return the stress."
+  },
+  "07-REMD-NVT": {
+    "what": "Replica exchange at constant temperature: one replica per <instance> row of the temperature ladder.",
+    "when": "Statistics for many temperatures at once and better sampling of rugged landscapes."
+  },
+  "08-REMD-NPT": {
+    "what": "Replica exchange at constant temperature and pressure (flexible cell).",
+    "when": "Sampling an isobar efficiently. The client must return the stress."
+  },
+  "09-PINVT-for-dynamics": {
+    "what": "Path-integral NVT (32 beads, PILE-G thermostat with a weak centroid coupling): nuclear quantum effects.",
+    "when": "Light atoms (hydrogen) where quantum nuclear effects matter; approximate quantum dynamics (thermostatted ring polymer MD)."
+  }
+}
