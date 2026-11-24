@@ -1,0 +1,233 @@
+# Trimmed from ACEsuit/mace v0.3.13 mace/tools/arg_parser.py (MIT License): a few options
+# of each builder, copied verbatim, for the tests of tools/mace_cli_schema.py.
+###########################################################################################
+# Parsing functionalities
+# Authors: Ilyes Batatia, Gregor Simm, David Kovacs
+# This program is distributed under the MIT License (see MIT.md)
+###########################################################################################
+
+import argparse
+import os
+from typing import Optional
+
+from .default_keys import DefaultKeys
+
+
+def build_default_arg_parser() -> argparse.ArgumentParser:
+    try:
+        import configargparse
+
+        parser = configargparse.ArgumentParser(
+            config_file_parser_class=configargparse.YAMLConfigFileParser,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        parser.add(
+            "--config",
+            type=str,
+            is_config_file=True,
+            help="config file to aggregate options",
+        )
+    except ImportError:
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+    parser.add_argument("--name", help="experiment name", required=True)
+    parser.add_argument(
+        "--log_dir", help="directory for log files", type=str, default=None
+    )
+    parser.add_argument(
+        "--device",
+        help="select device",
+        type=str,
+        choices=["cpu", "cuda", "mps", "xpu"],
+        default="cpu",
+    )
+    parser.add_argument(
+        "--plot",
+        help="Plot results of training",
+        type=str2bool,
+        default=True,
+    )
+    parser.add_argument(
+        "--plot_frequency",
+        help="Set plotting frequency: '0' for only at the end or an integer N to plot every N epochs.",
+        type=int,
+        default="0",
+    )
+    parser.add_argument(
+        "--model",
+        help="model type",
+        default="MACE",
+        choices=[
+            "BOTNet",
+            "MACE",
+            "ScaleShiftMACE",
+            "ScaleShiftBOTNet",
+            "AtomicDipolesMACE",
+            "EnergyDipolesMACE",
+        ],
+    )
+    parser.add_argument(
+        "--r_max", help="distance cutoff (in Ang)", type=float, default=5.0
+    )
+    parser.add_argument(
+        "--train_file",
+        help="Training set file, format is .xyz or .h5",
+        type=str,
+        required=False,
+    )
+    parser.add_argument(
+        "--valid_file",
+        help="Validation set .xyz or .h5 file",
+        default=None,
+        type=str,
+        required=False,
+    )
+    parser.add_argument(
+        "--valid_fraction",
+        help="Fraction of training set used for validation",
+        type=float,
+        default=0.1,
+        required=False,
+    )
+    parser.add_argument(
+        "--test_file",
+        help="Test set .xyz pt .h5 file",
+        type=str,
+    )
+    parser.add_argument(
+        "--statistics_file",
+        help="json file containing statistics of training set",
+        type=str,
+        default=None,
+        required=False,
+    )
+    parser.add_argument(
+        "--E0s",
+        help="Dictionary of isolated atom energies",
+        type=str,
+        default=None,
+        required=False,
+    )
+    parser.add_argument("--batch_size", help="batch size", type=int, default=10)
+    parser.add_argument(
+        "--swa",
+        "--stage_two",
+        help="use Stage Two loss weight, which decreases the learning rate and increases the energy weight at the end of the training to help converge them",
+        action="store_true",
+        default=False,
+        dest="swa",
+    )
+    parser.add_argument(
+        "--max_num_epochs", help="Maximum number of epochs", type=int, default=2048
+    )
+    parser.add_argument(
+        "--foundation_model",
+        help="Path to the foundation model for transfer learning",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--foundation_model_readout",
+        help="Use readout of foundation model for transfer learning",
+        action="store_false",
+        default=True,
+    )
+    parser.add_argument(
+        "--clip_grad",
+        help="Gradient Clipping Value",
+        type=check_float_or_none,
+        default=10.0,
+    )
+    parser.add_argument(
+        "--wandb_log_hypers",
+        help="The hyperparameters to log in Weights and Biases",
+        type=list,
+        default=[
+            "num_channels",
+            "max_L",
+            "correlation",
+            "lr",
+            "swa_lr",
+            "weight_decay",
+            "batch_size",
+            "max_num_epochs",
+            "start_swa",
+            "energy_weight",
+            "forces_weight",
+        ],
+    )
+    return parser
+
+
+def build_preprocess_arg_parser() -> argparse.ArgumentParser:
+    try:
+        import configargparse
+
+        parser = configargparse.ArgumentParser(
+            config_file_parser_class=configargparse.YAMLConfigFileParser,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        parser.add(
+            "--config",
+            type=str,
+            is_config_file=True,
+            help="config file to aggregate options",
+        )
+    except ImportError:
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+    parser.add_argument(
+        "--train_file",
+        help="Training set h5 file",
+        type=str,
+        default=None,
+        required=True,
+    )
+    parser.add_argument(
+        "--num_process",
+        help="The user defined number of processes to use, as well as the number of files created.",
+        type=int,
+        default=int(os.cpu_count() / 4),
+    )
+    parser.add_argument(
+        "--compute_statistics",
+        help="Compute statistics for the dataset",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--batch_size",
+        help="batch size to compute average number of neighbours",
+        type=int,
+        default=16,
+    )
+    parser.add_argument(
+        "--shuffle",
+        help="Shuffle the training dataset",
+        type=str2bool,
+        default=True,
+    )
+    return parser
+
+
+def check_float_or_none(value: str) -> Optional[float]:
+    try:
+        return float(value)
+    except ValueError:
+        if value != "None":
+            raise argparse.ArgumentTypeError(
+                f"{value} is an invalid value (float or None)"
+            ) from None
+        return None
+
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    if value.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")

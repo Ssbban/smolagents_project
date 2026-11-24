@@ -5,19 +5,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-IPI_TEMPLATE_URLS = {
-    "00-NVE": "00-NVE/input.xml",
-    "01-NVT-for-dynamics": "01-NVT-for-dynamics/input.xml",
-    "02-NVT-Langevin": "02-NVT-Langevin/input.xml",
-    "03-NVT-SVR": "03-NVT-SVR/input.xml",
-    "04-NVT-GLE": "04-NVT-GLE/input.xml",
-    "05-NPT-isotropic-BZP": "05-NPT-isotropic-BZP/input.xml",
-    "06-flexible-MTTK": "06-flexible-MTTK/input.xml",
-    "07-REMD-NVT": "07-REMD-NVT/input.xml",
-    "08-REMD-NPT": "08-REMD-NPT/input.xml",
-    "09-REPIMD-NVT-for-dynamics": "09-PINVT-for-dynamics/input.xml",
-}
-
 SIMULATION_ATTR_OPTIONS = {
     "verbosity": {"quiet", "low", "medium", "high", "debug"},
     "threading": {True, False, "true", "false", "True", "False"},
@@ -255,6 +242,34 @@ class ClusterSpec:
         raise_problems("Slurm settings", self.problems(require_conda=require_conda))
         return self
 
+    def sbatch_header(self, gpus: int) -> List[str]:
+        """Shebang and #SBATCH lines of a job script; a GPU line only when `gpus` > 0."""
+        lines = [
+            "#!/bin/bash -l",
+            f"#SBATCH --job-name={self.job_name}",
+            f"#SBATCH --time={self.time}",
+            f"#SBATCH --partition={self.partition}",
+            f"#SBATCH --nodes={self.nodes}",
+            f"#SBATCH --ntasks={self.ntasks}",
+            f"#SBATCH --mem={self.memory}",
+        ]
+        if self.mail_user:
+            lines.append(f"#SBATCH --mail-user={self.mail_user}")
+            if self.mail_type:
+                lines.append(f"#SBATCH --mail-type={self.mail_type}")
+        if gpus:
+            lines.append(f"#SBATCH --gres=gpu:{gpus}")
+        lines += [f"#SBATCH --{key}={value}" for key, value in self.additional_slurm_args.items()
+                  if value is not None and value != ""]
+        return lines
+
+    def environment(self, *scripts: str) -> List[str]:
+        """Shell lines that source `scripts` and conda.sh and activate the environment, with set -u off meanwhile:
+        such scripts read unset variables."""
+        return ["set +u  # environment and conda activation scripts may read unset variables",
+                *(f"source {script}" for script in scripts),
+                f"source {self.conda_activation_path}", f"conda activate {self.conda_env}", "set -u"]
+
 
 @dataclass(frozen=True)
 class MACEJobSpec:
@@ -301,12 +316,11 @@ class IPIInputSpec:
     modifications: Mapping[str, Any] = field(default_factory=dict)
     simulation_attrs: Mapping[str, Any] = field(default_factory=dict)
 
-    def problems(self) -> List[str]:
+    def problems(self, *, templates: Mapping[str, Any]) -> List[str]:
         p: List[str] = []
-        if self.template_type not in IPI_TEMPLATE_URLS:
-            p.append(
-                f"Unknown template type: {self.template_type}. Available options: {list(IPI_TEMPLATE_URLS.keys())}"
-            )
+        if self.template_type not in templates:
+            p.append(f"Unknown template type: {self.template_type}. Available options: {list(templates)} "
+                     "(ipi_template_schema() describes them)")
         if not isinstance(self.modifications, Mapping):
             p.append("modifications must be a mapping")
         if not isinstance(self.simulation_attrs, Mapping):
@@ -318,13 +332,19 @@ class IPIInputSpec:
                 allowed = SIMULATION_ATTR_OPTIONS[attr_name]
                 if value not in allowed:
                     p.append(f"simulation_attrs.{attr_name} must be one of {sorted(map(str, allowed))}")
-            elif attr_name is not None and attr_name not in {"safe_stride", "floatformat", "sockets_prefix"}:
+            elif attr_name == "sockets_prefix":
+                p.append("sockets_prefix is not accepted: the ASE client always connects under /tmp/ipi_, "
+                         "so the tool sets the socket itself")
+            elif attr_name is not None and attr_name not in {"safe_stride", "floatformat"}:
                 p.append(f"Unsupported simulation attribute: {attr_name}")
         return p
 
-    def validate(self) -> "IPIInputSpec":
-        raise_problems("i-PI input", self.problems())
+    def validate(self, *, templates: Mapping[str, Any]) -> "IPIInputSpec":
+        raise_problems("i-PI input", self.problems(templates=templates))
         return self
+
+
+CLIENT_DEVICES = ("cpu", "cuda")
 
 
 @dataclass(frozen=True)
@@ -334,6 +354,7 @@ class IPIASEClientSpec:
     init_xyz_path: str = "init.xyz"
     use_stress: bool = True
     calculator_kwargs: Mapping[str, Any] = field(default_factory=dict)
+    device: str = "cpu"
 
     def problems(self, *, supported_calculators: Mapping[str, str]) -> List[str]:
         p: List[str] = []
@@ -344,11 +365,18 @@ class IPIASEClientSpec:
         check(p, _require_safe_path, "init_xyz_path", self.init_xyz_path)
         if not isinstance(self.use_stress, bool):
             p.append("use_stress must be a boolean")
+        if self.device not in CLIENT_DEVICES:
+            p.append(f"device must be one of {list(CLIENT_DEVICES)}; got {self.device!r}")
         if check(p, _normalize_mapping, "calculator_kwargs", self.calculator_kwargs) is not None:
             try:
                 json.dumps(dict(self.calculator_kwargs))
             except (TypeError, ValueError):
                 p.append("calculator_kwargs values must be plain data: text, numbers, true/false, None, lists or dicts")
+            if "device" in self.calculator_kwargs:
+                p.append("set the device with the device argument, not in calculator_kwargs")
+            for key in self.calculator_kwargs:
+                if not str(key).isidentifier():
+                    p.append(f"calculator_kwargs key {key!r} is not a Python keyword-argument name")
         return p
 
     def validate(self, *, supported_calculators: Mapping[str, str]) -> "IPIASEClientSpec":
@@ -361,22 +389,28 @@ class IPISubmitSpec:
     cluster: ClusterSpec
     ipi_input_path: str
     ase_path: str
-    ipi_env_path: str = "~/i-pi/env.sh"
-    sleep_time: int = 30
-    multi_run: bool = False
+    socket_address: str = "driver"
+    ipi_env_path: Optional[str] = None
     num_force_providers: int = 1
+    max_force_providers: int = 1  # beads x replicas of the input
+    device: str = "cpu"  # of the ASE client
 
     def problems(self) -> List[str]:
         p = self.cluster.problems(require_conda=True)
         check(p, _require_safe_path, "ipi_input_path", self.ipi_input_path)
         check(p, _require_safe_path, "ase_path", self.ase_path)
-        check(p, _require_safe_path, "ipi_env_path", self.ipi_env_path)
-        check(p, _positive_int, "sleep_time", self.sleep_time)
-        if not isinstance(self.multi_run, bool):
-            p.append("multi_run must be a boolean")
+        check(p, _require_safe_name, "socket_address", self.socket_address)
+        if self.ipi_env_path is not None:
+            check(p, _require_safe_path, "ipi_env_path", self.ipi_env_path)
         if check(p, _positive_int, "num_force_providers", self.num_force_providers) is not None:
-            if not self.multi_run and self.num_force_providers != 1:
-                p.append("num_force_providers must be 1 when multi_run is False")
+            if self.num_force_providers > self.max_force_providers == 1:
+                p.append("num_force_providers must be 1: the input has one bead and one replica, "
+                         "so a second client would have nothing to compute")
+            elif self.num_force_providers > self.max_force_providers:
+                p.append(f"num_force_providers must be at most {self.max_force_providers} "
+                         "(beads x replicas of the input); more clients would wait idle")
+        if self.device == "cuda" and self.cluster.gpus_per_node == 0:
+            p.append("the ASE client runs on cuda but gpus_per_node is 0; request a GPU or generate a cpu client")
         return p
 
     def validate(self) -> "IPISubmitSpec":

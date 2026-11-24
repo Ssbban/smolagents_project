@@ -1,215 +1,334 @@
+"""The options of `mace_run_train` for the MACE version that will run the job.
+
+The table is read with `ast` from the body of `build_default_arg_parser` in MACE's `mace/tools/arg_parser.py`
+(the module also defines the parser of `mace_prepare_data`, whose options `mace_run_train` rejects). MACE is
+never imported: that would pull in torch, and the file may belong to another environment.
+
+Where the file comes from, first that works:
+  1. MACE installed in the job's conda environment, when that environment is visible from this machine;
+  2. MACE importable where the agent runs;
+  3. the release tag of DEFAULT_MACE_VERSION, fetched once from GitHub and kept under .cache/mace/.
+"""
+
 from __future__ import annotations
 
 import ast
+import copy
+import difflib
+import importlib.metadata
+import importlib.util
+import json
+import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import requests
 from smolagents.tools import tool
 
+from tools.get_server_info import probe_cluster
+from tools.session import get_session
 
-MACE_ARG_PARSER_URL = (
-    "https://raw.githubusercontent.com/ACEsuit/mace/refs/heads/main/mace/tools/arg_parser.py"
-)
-
-VALUE_ACTIONS = {None, "store", "append", "extend"}
+DEFAULT_MACE_VERSION = "0.3.17"
+TAG_URL = "https://raw.githubusercontent.com/ACEsuit/mace/v{version}/mace/tools/arg_parser.py"
+CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "mace"
+BUILDER = "build_default_arg_parser"
+# MACE's argparse `type=` functions -> the type names shown to the model.
+TYPE_NAMES = {"str": "str", "int": "int", "float": "float", "str2bool": "bool",
+              "check_float_or_none": "float_or_none", "read_yaml": "yaml"}  # fmt: skip
 SWITCH_ACTIONS = {"store_true", "store_false"}
+_NOT_LITERAL = object()
 
 
 def normalize_mace_option(option: str) -> str:
-    return option.strip().removeprefix("--").replace("-", "_")
+    return str(option).strip().removeprefix("--").replace("-", "_")
+
+
+def cli_text(value: Any) -> str:
+    """The text argparse receives for a value, as the job script writes it."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def convert(type_name: str, text: str) -> Tuple[bool, Any]:
+    """(True, value) when argparse would accept `text` for this type, else (False, reason).
+
+    str2bool and check_float_or_none follow their definitions at the end of MACE's arg_parser.py.
+    """
+    try:
+        if type_name == "int":
+            return True, int(text)
+        if type_name in ("float", "float_or_none"):
+            return True, float(text)
+    except ValueError:
+        if type_name == "float_or_none" and text == "None":
+            return True, None
+        return False, f"invalid {type_name} value {text!r}"
+    if type_name == "bool":
+        if text.lower() in ("yes", "true", "t", "y", "1"):
+            return True, True
+        if text.lower() in ("no", "false", "f", "n", "0"):
+            return True, False
+        return False, f"expects a boolean (true/false), got {text!r}"
+    return True, text
+
+
+@dataclass(frozen=True)
+class MACEFlag:
+    name: str  # as written after "--" in MACE's source
+    aliases: Tuple[str, ...]
+    kind: str  # "value" | "switch"
+    type_name: str
+    choices: Optional[list]
+    default: Any
+    help: str
+    nargs: Any = None
+
+    def describe(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {"kind": self.kind, "type": self.type_name, "default": self.default, "help": self.help}
+        if self.choices is not None:
+            info["choices"] = self.choices
+        if self.aliases:
+            info["aliases"] = list(self.aliases)
+        if self.nargs is not None:
+            info["nargs"] = self.nargs
+        return info
+
+
+@dataclass(frozen=True)
+class MACECliSchema:
+    version: str
+    origin: str  # where the table was read from
+    flags: Mapping[str, MACEFlag]  # by normalised name and alias
+
+    def get(self, option: str) -> Optional[MACEFlag]:
+        return self.flags.get(normalize_mace_option(option))
+
+    def names(self, kind: str) -> List[str]:
+        return sorted({flag.name for flag in self.flags.values() if flag.kind == kind}, key=str.lower)
+
+    def problem(self, option: str, value: Any = None, *, switch: bool = False) -> Optional[str]:
+        """Why mace_run_train would reject this option (with this value), or None."""
+        flag = self.get(option)
+        if flag is None:
+            close = difflib.get_close_matches(normalize_mace_option(option), list(self.flags), n=3)
+            hint = f"; did you mean {', '.join(close)}?" if close else "; find it with mace_cli_schema(search=...)"
+            return f"unknown MACE option {option!r} (MACE {self.version}){hint}"
+        if switch:
+            if flag.kind == "switch" or flag.nargs == "?":
+                return None
+            return f"--{flag.name} needs a value: put it in additional_args, not additional_flag_args"
+        if flag.kind == "switch":
+            return f"--{flag.name} is a switch without a value: put it in additional_flag_args, not additional_args"
+        ok, converted = convert(flag.type_name, cli_text(value))
+        if not ok:
+            return f"--{flag.name}: {converted}"
+        if flag.choices is not None and converted not in flag.choices:
+            return f"--{flag.name} must be one of {flag.choices}; got {value!r}"
+        return None
 
 
 def _literal(node: ast.AST) -> Any:
     try:
         return ast.literal_eval(node)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return _NOT_LITERAL
+
+
+def _text(node: ast.AST) -> str:
+    """String literals of a help expression joined ("a" "b", "a" + "b", f-strings without their fields)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _text(node.left) + _text(node.right)
+    if isinstance(node, ast.JoinedStr):
+        return "".join(_text(part) for part in node.values)
+    return ""
+
+
+def _flag(call: ast.Call) -> Optional[MACEFlag]:
+    keywords = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+    options = [value for value in map(_literal, call.args) if isinstance(value, str) and value.startswith("--")]
+    if not options or "is_config_file" in keywords:
         return None
+    action = _literal(keywords["action"]) if "action" in keywords else None
+    type_node = keywords.get("type")
+    type_name = getattr(type_node, "id", None) or getattr(type_node, "attr", None) or "str"
+    choices = _literal(keywords["choices"]) if "choices" in keywords else None
+    default = _literal(keywords["default"]) if "default" in keywords else None
+    nargs = _literal(keywords["nargs"]) if "nargs" in keywords else None
+    return MACEFlag(
+        name=options[0][2:],
+        aliases=tuple(option[2:] for option in options[1:]),
+        kind="switch" if action in SWITCH_ACTIONS else "value",
+        type_name="switch" if action in SWITCH_ACTIONS else TYPE_NAMES.get(type_name, type_name),
+        choices=list(choices) if isinstance(choices, (list, tuple)) else None,
+        default=ast.unparse(keywords["default"]) if default is _NOT_LITERAL else default,
+        help=" ".join(_text(keywords["help"]).split()) if "help" in keywords else "",
+        nargs=None if nargs is _NOT_LITERAL else nargs,
+    )
 
 
-def _name(node: ast.AST) -> Optional[str]:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _name(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
-    return None
-
-
-def _keyword(call: ast.Call, name: str) -> Optional[ast.AST]:
-    for keyword in call.keywords:
-        if keyword.arg == name:
-            return keyword.value
-    return None
-
-
-def _keyword_literal(call: ast.Call, name: str) -> Any:
-    node = _keyword(call, name)
-    return _literal(node) if node is not None else None
-
-
-def _keyword_name(call: ast.Call, name: str) -> Optional[str]:
-    node = _keyword(call, name)
-    return _name(node) if node is not None else None
-
-
-@dataclass(frozen=True)
-class MACEFlag:
-    canonical: str
-    aliases: List[str]
-    kind: str
-    action: Optional[str]
-    type_name: Optional[str]
-    choices: Optional[List[Any]]
-    required: bool
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "canonical": self.canonical,
-            "aliases": self.aliases,
-            "kind": self.kind,
-            "action": self.action,
-            "type": self.type_name,
-            "choices": self.choices,
-            "required": self.required,
-        }
-
-
-@dataclass(frozen=True)
-class MACECliSchema:
-    source_url: str
-    flags: Mapping[str, MACEFlag]
-
-    @property
-    def value_options(self) -> List[str]:
-        return sorted(name for name, flag in self.flags.items() if flag.kind == "value")
-
-    @property
-    def switch_options(self) -> List[str]:
-        return sorted(name for name, flag in self.flags.items() if flag.kind == "switch")
-
-    def resolve(self, option: str) -> MACEFlag:
-        normalized = normalize_mace_option(option)
-        if normalized in self.flags:
-            return self.flags[normalized]
-        raise ValueError(
-            f"Unknown MACE CLI option '{option}'. Sync the schema from {self.source_url} and use an official flag."
-        )
-
-    def require_value(self, option: str) -> MACEFlag:
-        flag = self.resolve(option)
-        if flag.kind != "value":
-            raise ValueError(
-                f"MACE option '--{flag.canonical}' is a switch flag. Put it in additional_flag_args, not additional_args."
-            )
-        return flag
-
-    def require_switch(self, option: str) -> MACEFlag:
-        flag = self.resolve(option)
-        if flag.kind != "switch":
-            raise ValueError(
-                f"MACE option '--{flag.canonical}' requires a value. Put it in additional_args, not additional_flag_args."
-            )
-        return flag
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "source_url": self.source_url,
-            "value_options": self.value_options,
-            "switch_options": self.switch_options,
-            "flags": {name: flag.as_dict() for name, flag in sorted(self.flags.items())},
-        }
-
-
-def parse_mace_arg_parser(source: str, *, source_url: str = MACE_ARG_PARSER_URL) -> MACECliSchema:
-    tree = ast.parse(source)
+def parse_mace_arg_parser(source: str, *, source_url: str = "", version: str = "unknown") -> MACECliSchema:
+    """The options added in `build_default_arg_parser` of an arg_parser.py text (`source_url` = its origin)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        raise ValueError(f"MACE's arg_parser.py ({source_url or 'given text'}) is not Python: {error}") from None
+    builder = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == BUILDER), None)
+    if builder is None:
+        raise ValueError(f"MACE's arg_parser.py ({source_url or 'given text'}) has no {BUILDER}()")
     flags: Dict[str, MACEFlag] = {}
-    alias_lookup: Dict[str, str] = {}
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in {"add_argument", "add"}:
-            continue
-
-        option_strings = [
-            value
-            for value in (_literal(arg) for arg in node.args)
-            if isinstance(value, str) and value.startswith("--")
-        ]
-        if not option_strings:
-            continue
-
-        canonical = normalize_mace_option(option_strings[0])
-        aliases = [normalize_mace_option(option) for option in option_strings]
-        action = _keyword_literal(node, "action")
-        if action in SWITCH_ACTIONS:
-            kind = "switch"
-        elif action in VALUE_ACTIONS:
-            kind = "value"
-        else:
-            raise ValueError(
-                f"Unsupported argparse action for MACE option '--{canonical}': {action}"
-            )
-
-        choices_literal = _keyword_literal(node, "choices")
-        choices = list(choices_literal) if isinstance(choices_literal, (list, tuple)) else None
-        flag = MACEFlag(
-            canonical=canonical,
-            aliases=aliases,
-            kind=kind,
-            action=action,
-            type_name=_keyword_name(node, "type"),
-            choices=choices,
-            required=bool(_keyword_literal(node, "required")),
-        )
-        flags[canonical] = flag
-        for alias in aliases:
-            alias_lookup[alias] = canonical
-
-    resolved_flags = dict(flags)
-    for alias, canonical in alias_lookup.items():
-        resolved_flags[alias] = flags[canonical]
-
-    return MACECliSchema(source_url=source_url, flags=resolved_flags)
+    for node in ast.walk(builder):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in ("add_argument", "add"):
+            flag = _flag(node)
+            for name in (flag.name, *flag.aliases) if flag else ():
+                flags[normalize_mace_option(name)] = flag
+    return MACECliSchema(version=version, origin=source_url, flags=flags)
 
 
-def load_mace_cli_schema(url: str = MACE_ARG_PARSER_URL) -> MACECliSchema:
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    return parse_mace_arg_parser(response.text, source_url=url)
+_TABLES: Dict[str, MACECliSchema] = {}
 
 
-def validate_mace_value(flag: MACEFlag, value: Any) -> None:
-    if flag.type_name == "str2bool":
-        if isinstance(value, bool):
-            return
-        if isinstance(value, str) and value.lower() in {"true", "false", "yes", "no", "1", "0"}:
-            return
-        raise ValueError(f"MACE option '--{flag.canonical}' requires an explicit boolean value.")
-    if flag.type_name == "int" and (not isinstance(value, int) or isinstance(value, bool)):
-        raise ValueError(f"MACE option '--{flag.canonical}' requires an integer value.")
-    if flag.type_name == "float" and (
-        not isinstance(value, (int, float)) or isinstance(value, bool)
-    ):
-        raise ValueError(f"MACE option '--{flag.canonical}' requires a numeric value.")
-    if flag.choices is not None and value not in flag.choices:
-        raise ValueError(
-            f"MACE option '--{flag.canonical}' must be one of {flag.choices}, got {value!r}."
-        )
+def _read_table(path: Path, version: str, origin: str) -> MACECliSchema:
+    """Parse a local arg_parser.py once per file version (path and modification time)."""
+    key = f"{path.resolve()}|{path.stat().st_mtime_ns}|{version}|{origin}"
+    if key not in _TABLES:
+        _TABLES[key] = parse_mace_arg_parser(path.read_text(encoding="utf-8"), source_url=origin, version=version)
+    return _TABLES[key]
+
+
+def _in_site_packages(env_dir: Path) -> Optional[Tuple[Path, str]]:
+    """(arg_parser.py, version) of the MACE installed in a Python environment directory, or None."""
+    for site in [*sorted(env_dir.glob("lib/python3*/site-packages")), env_dir / "Lib" / "site-packages"]:
+        parser = site / "mace" / "tools" / "arg_parser.py"
+        if parser.is_file():
+            dist = sorted(site.glob("mace_torch-*.dist-info"))
+            version = dist[-1].name.removeprefix("mace_torch-").removesuffix(".dist-info") if dist else "unknown"
+            return parser, version
+    return None
+
+
+def mace_in_conda_env(conda_activation_path: Optional[str], conda_env: Optional[str]) -> Optional[Tuple[Path, str]]:
+    """MACE of a conda environment, located from conda.sh (<base>/etc/profile.d/conda.sh) and the name."""
+    if not conda_activation_path or not conda_env:
+        return None
+    parents = Path(os.path.expanduser(conda_activation_path)).parents
+    if len(parents) < 3:
+        return None
+    base = parents[2]
+    candidates = [base] if conda_env == "base" else [base / "envs" / conda_env, Path.home() / ".conda/envs" / conda_env]
+    for env_dir in candidates:
+        found = _in_site_packages(env_dir) if env_dir.is_dir() else None
+        if found:
+            return found
+    return None
+
+
+def _importable_here() -> Optional[Tuple[Path, str]]:
+    spec = importlib.util.find_spec("mace")  # locates the package without importing it
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    parser = Path(list(spec.submodule_search_locations)[0]) / "tools" / "arg_parser.py"
+    if not parser.is_file():
+        return None
+    try:
+        version = importlib.metadata.version("mace-torch")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return parser, version
+
+
+def _release_table(version: str) -> MACECliSchema:
+    cached = CACHE_DIR / f"arg_parser-v{version}.py"
+    origin = f"release tag v{version}; the job's environment was not visible from here"
+    if not cached.is_file():
+        url = TAG_URL.format(version=version)
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as error:
+            raise ValueError(f"MACE {version}'s option table could not be fetched from {url}: {error}") from None
+        parse_mace_arg_parser(response.text, source_url=url, version=version)  # refuse to cache something else
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(response.text, encoding="utf-8")
+    return _read_table(cached, version, origin)
+
+
+def load_mace_cli_schema(
+    conda_activation_path: Optional[str] = None, conda_env: Optional[str] = None
+) -> MACECliSchema:
+    """The option table of the MACE that will run the job (see the module docstring for the order)."""
+    found = mace_in_conda_env(conda_activation_path, conda_env)
+    if found:
+        return _read_table(found[0], found[1], f"installed in conda environment '{conda_env}'")
+    found = _importable_here()
+    if found:
+        return _read_table(found[0], found[1], "installed where the agent runs")
+    return _release_table(DEFAULT_MACE_VERSION)
+
+
+def job_environment(
+    conda_activation_path: Optional[str], conda_env: Optional[str]
+) -> Tuple[Optional[str], Optional[str], List[str]]:
+    """Fill a missing conda.sh path or environment from the session's cluster probe (run once if needed).
+
+    The environment is taken only when exactly one environment of the probe has MACE installed.
+    Returns (conda_activation_path, conda_env, notes saying what was taken).
+    """
+    if conda_activation_path and conda_env:
+        return conda_activation_path, conda_env, []
+    session = get_session()
+    if session.cluster is None:
+        session.cluster = probe_cluster()
+    notes = []
+    if not conda_activation_path and session.cluster.get("conda_activation_path"):
+        conda_activation_path = session.cluster["conda_activation_path"]
+        notes.append(f"conda_activation_path {conda_activation_path} was taken from the cluster probe")
+    if not conda_env and conda_activation_path:
+        envs = session.cluster.get("available_conda_envs") or []
+        with_mace = [env for env in envs if mace_in_conda_env(conda_activation_path, env)]
+        if len(with_mace) == 1:
+            conda_env = with_mace[0]
+            notes.append(f"conda_env {conda_env} was taken from the cluster probe: the only environment with MACE")
+    return conda_activation_path, conda_env, notes
 
 
 @tool
-def mace_cli_schema() -> Dict[str, Any]:
+def mace_cli_schema(
+    names: Optional[List[str]] = None, search: Optional[str] = None, conda_env: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Fetch and parse the official MACE training CLI schema.
+    Look up options of mace_run_train in the MACE version the job will run; MACE_script validates against the
+    same table. Without arguments: {"mace_version", "source", "value_options", "switch_options"} with all option
+    names (value options go into MACE_script's additional_args, switches into additional_flag_args). With names:
+    {"options": {name: {kind, type, choices, default, help}}, "unknown": {name: close matches}}. With search:
+    {"matches": [names whose name or help contains the text]}. Look up the options you need instead of guessing.
 
     Args:
-        None: This tool takes no arguments.
-
-    Returns:
-        Dictionary containing value_options, switch_options and per-flag metadata.
+        names: Option names to describe, e.g. ["r_max", "swa"].
+        search: Text to find in option names and help texts, e.g. "stress".
+        conda_env: The conda environment the job will use, if already known (its MACE version is then used).
     """
-    return load_mace_cli_schema().as_dict()
+    conda_activation_path, conda_env, _ = job_environment(None, conda_env)
+    table = load_mace_cli_schema(conda_activation_path, conda_env)
+    result: Dict[str, Any] = {"mace_version": table.version, "source": table.origin}
+    if names:
+        found = {name: table.get(name) for name in names}
+        result["options"] = {flag.name: flag.describe() for flag in found.values() if flag}
+        result["unknown"] = {
+            name: difflib.get_close_matches(normalize_mace_option(name), list(table.flags), n=3)
+            for name, flag in found.items() if flag is None
+        }  # fmt: skip
+    if search:
+        text = search.lower()
+        result["matches"] = sorted(
+            {f.name for f in table.flags.values() if text in f.name.lower() or text in f.help.lower()}, key=str.lower
+        )
+    if not names and not search:
+        result["value_options"] = table.names("value")
+        result["switch_options"] = table.names("switch")
+    return copy.deepcopy(result)  # choices and defaults are lists of the cached table MACE_script validates with

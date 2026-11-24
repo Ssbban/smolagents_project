@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 import pytest
 
@@ -27,7 +28,7 @@ MACE_PARAMS = {
     "job_name": "mace_baseline", "time": "12:00:00", "partition": "gpu", "nodes": 1, "ntasks": 1,
     "gpus_per_node": 1, "memory": "32G", "conda_env": "mace",
     "conda_activation_path": "/opt/conda/etc/profile.d/conda.sh", "name": "water_mace",
-    "train_file": "data/train.xyz", "valid_fraction": 0.1, "E0s": "average", "max_num_epochs": 100,
+    "train_file": "~/data/train.xyz", "valid_fraction": 0.1, "E0s": "average", "max_num_epochs": 100,
     "device": "cuda", "additional_args": {"model": "MACE", "r_max": 5.0, "batch_size": 10},
     "additional_flag_args": ["swa"],
 }  # fmt: skip
@@ -47,14 +48,20 @@ def mace_schema(monkeypatch):
     return schema
 
 
+REAL_RUN = subprocess.run
+
+
 class FakeRun:
-    """Stands in for subprocess.run: answers by program name and records every call."""
+    """Stands in for subprocess.run: answers by program name and records every call.
+    This Python itself (the i-PI input check runs it as a child) still runs for real."""
 
     def __init__(self, answers=None):
         self.answers = answers or {}
         self.calls = []
 
     def __call__(self, argv, **kwargs):
+        if argv[0] == sys.executable:
+            return REAL_RUN(argv, **kwargs)
         self.calls.append((list(argv), kwargs))
         answer = self.answers.get(argv[0], FileNotFoundError(2, "not found", argv[0]))
         if callable(answer) and not isinstance(answer, BaseException):

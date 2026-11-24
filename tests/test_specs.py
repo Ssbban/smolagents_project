@@ -84,3 +84,12 @@ def test_ipi_submit_spec_collects_cluster_and_own_problems():
     assert len(found) == 3
     assert any("memory" in p for p in found) and any("ipi_input_path" in p for p in found)
     assert any("num_force_providers must be 1" in p for p in found)
+
+def test_client_keyword_arguments_must_be_python_names():
+    from tools.specs import IPIASEClientSpec
+
+    calculators = {"mace_mp": "mace_mp"}
+    bad = IPIASEClientSpec(calculator="mace_mp", calculator_kwargs={"a-b": 1}).problems(supported_calculators=calculators)
+    good = IPIASEClientSpec(calculator="mace_mp", calculator_kwargs={"model": "medium"}).problems(supported_calculators=calculators)
+    assert any("'a-b'" in problem for problem in bad)
+    assert good == []
