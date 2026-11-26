@@ -1,4 +1,4 @@
-# smolagents_project
+# MACE & I-PI Agent (Public Version)
 
 A scientific agent for people who train MACE machine-learning potentials and run i-PI molecular dynamics on a
 Slurm cluster. A person describes a job in plain language at a terminal. A manager agent hands the request to a
