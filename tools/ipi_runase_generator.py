@@ -38,7 +38,6 @@ def model_path_problems(calculator_kwargs: Any, on_cluster: bool) -> list[str]:
 
 
 def render_ase_client(spec: IPIASEClientSpec) -> str:
-    spec.validate(supported_calculators=CALCULATOR_IMPORTS)
     calc_name_lower = spec.calculator.lower()
     # Through JSON so that only plain values reach repr(): an object's own __repr__ could write any code here.
     kwargs_str = repr(json.loads(json.dumps(dict(spec.calculator_kwargs))))

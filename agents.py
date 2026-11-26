@@ -14,9 +14,9 @@ from smolagents.models import OpenAIServerModel
 from smolagents.utils import AgentError
 
 from config import Settings
-from tools.RetrieverTool import RetrieverTool
-from tools.customize_plan import interrupt_after_plan
-from tools.get_server_info import slurm_config
+from tools.retriever import RetrieverTool
+from tools.plan_review import interrupt_after_plan
+from tools.slurm_config import slurm_config
 from tools.github_fetch import github_fetch
 from tools.ipi_help import ipi_tag_help
 from tools.ipi_InputFile_generator import ipi_InputFile_generator, ipi_template_schema
@@ -28,7 +28,7 @@ from tools.mace_script import MACE_script
 from tools.preflight import preflight
 from tools.session import get_session
 from tools.show_content import show_content
-from tools.slurm_status import job_status
+from tools.job_status import job_status
 from tools.slurm_submit import slurm_submit
 from tools.structure_writer import write_structure
 from tools.trace import step_callback

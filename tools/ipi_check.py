@@ -42,7 +42,7 @@ def forcefields(root: ET.Element) -> list[dict]:
     """The force fields declared in the input, with i-PI's defaults for a socket (mode inet, localhost)."""
     found = []
     for element in root:
-        if isinstance(element.tag, str) and element.tag.startswith("ff"):
+        if element.tag.startswith("ff"):
             socket = element.tag == "ffsocket"
             found.append({
                 "type": element.tag,
@@ -70,7 +70,7 @@ def validation_copy(root: ET.Element) -> str:
     """The input with dummy force fields and the placeholder structure: loading it runs nothing and reads nothing."""
     copy = ET.fromstring(ET.tostring(root))
     for index, element in enumerate(list(copy)):
-        if isinstance(element.tag, str) and element.tag.startswith("ff"):
+        if element.tag.startswith("ff"):
             dummy = ET.Element("ffdirect", name=element.get("name", "dummy"))
             ET.SubElement(dummy, "pes").text = "dummy"
             copy.remove(element)

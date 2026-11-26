@@ -32,10 +32,7 @@ def step_callback(step: Any, agent: Any = None) -> None:
     """Step callback for `step_callbacks={MemoryStep: step_callback}`; never records model input messages."""
     from tools.session import get_session
 
-    try:
-        trace = get_session().trace
-    except RuntimeError:
-        return
+    trace = get_session().trace
     data: dict[str, Any] = {"agent": getattr(agent, "name", None), "step_type": type(step).__name__}
     if isinstance(step, ActionStep):
         data["step"] = step.step_number

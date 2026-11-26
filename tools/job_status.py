@@ -5,7 +5,7 @@ from typing import Optional
 
 from smolagents.tools import tool
 
-from tools.session import get_session
+from tools.session import Job, get_session
 
 SQUEUE_FORMAT = "%i|%T|%r|%M"
 SACCT_FIELDS = "JobID,State,ExitCode,Elapsed,Reason"
@@ -78,11 +78,10 @@ def _query(job_id: str) -> dict:
                                    "elapsed": None, "exit_code": None}
 
 
-def _log_tail(job_id: str) -> Optional[str]:
-    job = get_session().find_job(job_id)
+def _log_tail(job: Optional[Job]) -> Optional[str]:
     if job is None:
         return None
-    log = Path(job.bundle) / f"slurm-{job_id}.out"
+    log = Path(job.bundle) / f"slurm-{job.job_id}.out"
     if not log.is_file():
         return None
     return "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_LINES:])
@@ -107,10 +106,11 @@ def job_status(job_id: str, wait_seconds: int = 0) -> dict:
         raise ValueError(f"job_id must be the number slurm_submit returned, e.g. '123456'; got {job_id!r}")
     deadline = _clock() + min(max(int(wait_seconds or 0), 0), MAX_WAIT_SECONDS)
     session = get_session()
+    job = session.find_job(job_id)  # None for a job not submitted in this session
     try:
         status = _query(job_id)
         # Slurm may lag right after a submission from here; an id unknown everywhere will not appear by waiting.
-        unknown_here = status["state"] == "UNKNOWN" and session.find_job(job_id) is None
+        unknown_here = status["state"] == "UNKNOWN" and job is None
         if unknown_here:
             status["reason"] = ("neither squeue nor sacct knows this job, and it was not submitted in this "
                                 "session - check the job id")
@@ -120,8 +120,7 @@ def job_status(job_id: str, wait_seconds: int = 0) -> dict:
     except _NoSlurm:
         status = {"state": "UNKNOWN", "reason": "squeue was not found on this machine", "elapsed": None,
                   "exit_code": None}
-    result = {"job_id": job_id, **status, "finished": status["state"] in FINISHED, "log_tail": _log_tail(job_id)}
-    job = session.find_job(job_id)
+    result = {"job_id": job_id, **status, "finished": status["state"] in FINISHED, "log_tail": _log_tail(job)}
     if job is not None and status["state"] != "UNKNOWN":
         job.state = status["state"]
     session.trace.emit("job_status", **{k: v for k, v in result.items() if k != "log_tail"})

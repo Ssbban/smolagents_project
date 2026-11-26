@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import requests
 from smolagents.tools import tool
 
-from tools.get_server_info import probe_cluster
+from tools.slurm_config import probe_cluster
 from tools.session import get_session
 
 DEFAULT_MACE_VERSION = "0.3.17"
@@ -177,10 +177,10 @@ def parse_mace_arg_parser(source: str, *, source_url: str = "", version: str = "
     try:
         tree = ast.parse(source)
     except SyntaxError as error:
-        raise ValueError(f"MACE's arg_parser.py ({source_url or 'given text'}) is not Python: {error}") from None
+        raise ValueError(f"MACE's arg_parser.py ({source_url}) is not Python: {error}") from None
     builder = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == BUILDER), None)
     if builder is None:
-        raise ValueError(f"MACE's arg_parser.py ({source_url or 'given text'}) has no {BUILDER}()")
+        raise ValueError(f"MACE's arg_parser.py ({source_url}) has no {BUILDER}()")
     flags: Dict[str, MACEFlag] = {}
     for node in ast.walk(builder):
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in ("add_argument", "add"):
@@ -201,17 +201,6 @@ def _read_table(path: Path, version: str, origin: str) -> MACECliSchema:
     return _TABLES[key]
 
 
-def _in_site_packages(env_dir: Path) -> Optional[Tuple[Path, str]]:
-    """(arg_parser.py, version) of the MACE installed in a Python environment directory, or None."""
-    for site in [*sorted(env_dir.glob("lib/python3*/site-packages")), env_dir / "Lib" / "site-packages"]:
-        parser = site / "mace" / "tools" / "arg_parser.py"
-        if parser.is_file():
-            dist = sorted(site.glob("mace_torch-*.dist-info"))
-            version = dist[-1].name.removeprefix("mace_torch-").removesuffix(".dist-info") if dist else "unknown"
-            return parser, version
-    return None
-
-
 def conda_env_dir(conda_activation_path: Optional[str], conda_env: Optional[str]) -> Optional[Path]:
     """Directory of a conda environment, located from conda.sh (<base>/etc/profile.d/conda.sh) and the name;
     None when it is not visible from this machine."""
@@ -228,7 +217,15 @@ def conda_env_dir(conda_activation_path: Optional[str], conda_env: Optional[str]
 def mace_in_conda_env(conda_activation_path: Optional[str], conda_env: Optional[str]) -> Optional[Tuple[Path, str]]:
     """(arg_parser.py, version) of the MACE installed in a conda environment, or None."""
     env_dir = conda_env_dir(conda_activation_path, conda_env)
-    return _in_site_packages(env_dir) if env_dir else None
+    if env_dir is None:
+        return None
+    for site in [*sorted(env_dir.glob("lib/python3*/site-packages")), env_dir / "Lib" / "site-packages"]:
+        parser = site / "mace" / "tools" / "arg_parser.py"
+        if parser.is_file():
+            dist = sorted(site.glob("mace_torch-*.dist-info"))
+            version = dist[-1].name.removeprefix("mace_torch-").removesuffix(".dist-info") if dist else "unknown"
+            return parser, version
+    return None
 
 
 def mace_envs(conda_activation_path: Optional[str]) -> Dict[str, str]:

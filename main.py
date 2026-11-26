@@ -6,13 +6,12 @@ import smolagents
 
 from agents import build_agents, build_model
 from config import Settings, SettingsError, shadowed_settings
-from tools.customize_plan import UserCancelled
+from tools.plan_review import UserCancelled
 from tools.session import Session, start_session
 
 with contextlib.suppress(ImportError):  # not on Windows
     import readline  # noqa: F401  (line editing and history for every input() prompt)
 
-SMOLAGENTS_VERSION = "1.26.0"  # requirements.txt; the agents use options older versions do not have
 HISTORY_TURNS = 3
 ANSWER_CHARS = 1000  # of each earlier answer passed on in "history"
 
@@ -48,10 +47,6 @@ def run_turn(manager, session: Session, request: str, history: list[dict]) -> st
 
 
 def main():
-    if smolagents.__version__ != SMOLAGENTS_VERSION:
-        raise SystemExit(f"Error: this Python has smolagents {smolagents.__version__}, the agent needs "
-                         f"{SMOLAGENTS_VERSION} (requirements.txt). Run it with the project's environment, "
-                         "e.g. .venv/bin/python main.py")
     try:
         settings = Settings.from_env()
     except SettingsError as error:

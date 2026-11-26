@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-import tools.slurm_status as status_module
-from tools.slurm_status import job_status, parse_sacct, parse_squeue
+import tools.job_status as status_module
+from tools.job_status import job_status, parse_sacct, parse_squeue
 
 
 def test_parse_squeue():

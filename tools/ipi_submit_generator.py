@@ -21,7 +21,6 @@ SCRIPT_LINE_RE = {
 
 
 def render_ipi_submit_script(spec: IPISubmitSpec) -> str:
-    spec.validate()
     cluster = spec.cluster
     header = cluster.sbatch_header(cluster.gpus_per_node)
     environment = cluster.environment(*filter(None, [spec.ipi_env_path]))

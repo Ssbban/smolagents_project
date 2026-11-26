@@ -1,6 +1,5 @@
 import copy
 import os
-import re
 import shutil
 import subprocess
 from typing import Any, Dict, List, Optional, Tuple
@@ -45,9 +44,7 @@ def _get_conda_envs() -> List[str]:
     for line in (stdout or "").splitlines():
         if line.startswith("#") or not line.strip():
             continue
-        match = re.match(r"^(\S+)", line)
-        if match:
-            envs.append(match.group(1))
+        envs.append(line.split()[0])
     return envs
 
 

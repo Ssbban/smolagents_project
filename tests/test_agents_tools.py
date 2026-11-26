@@ -10,12 +10,12 @@ from smolagents.memory import PlanningStep
 from smolagents.models import ChatMessage, MessageRole
 from smolagents.monitoring import Timing
 
-import tools.slurm_status as status_module
+import tools.job_status as status_module
 from tools import approval
 from tools.approval import Decision
-from tools.customize_plan import UserCancelled, interrupt_after_plan
+from tools.plan_review import UserCancelled, interrupt_after_plan
 from tools.job_output import job_output
-from tools.slurm_status import job_status
+from tools.job_status import job_status
 from tools.slurm_submit import slurm_submit
 
 SUBMIT = "#!/bin/bash\n#SBATCH --job-name=md\n#SBATCH --time=1:00:00\ni-pi input.xml &\npython run_ase.py\n"

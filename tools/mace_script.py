@@ -128,15 +128,21 @@ def option_problems(spec: MACEJobSpec, table: MACECliSchema) -> List[str]:
     extra = list(spec.additional_args) if isinstance(spec.additional_args, Mapping) else []
     for option, value in command_options(spec):
         flag = table.get(option)
-        problems += filter(None, [table.problem(option, value), path_problem(flag.name if flag else option, value)])
+        for problem in (table.problem(option, value), path_problem(flag.name if flag else option, value)):
+            if problem:
+                problems.append(problem)
     for option in switches:
-        problems += filter(None, [table.problem(option, switch=True)])
+        problem = table.problem(option, switch=True)
+        if problem:
+            problems.append(problem)
     for option in [*extra, *switches]:
         flag = table.get(option)
         if flag is not None and flag.name in DEDICATED_MACE_OPTIONS:
             problems.append(f"--{flag.name} has a dedicated argument of MACE_script; set it there, not in additional_*")
     foundation = spec.additional_args.get("foundation_model") if isinstance(spec.additional_args, Mapping) else None
-    problems += filter(None, [e0s_problem(spec.e0s, foundation)])
+    problem = e0s_problem(spec.e0s, foundation)
+    if problem:
+        problems.append(problem)
     return problems
 
 
@@ -275,7 +281,6 @@ def MACE_script(
     try:
         table = load_mace_cli_schema(conda_activation_path, conda_env)
     except ValueError as error:
-        table = None
         problems.append(f"the MACE option table could not be loaded, so no option was checked: {error}")
     else:
         problems += option_problems(spec, table)

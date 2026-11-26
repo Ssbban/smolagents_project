@@ -1,7 +1,7 @@
 import os
 import subprocess
 
-from tools.get_server_info import parse_nodes, parse_partitions, slurm_config
+from tools.slurm_config import parse_nodes, parse_partitions, slurm_config
 
 
 def test_slurm_config_without_slurm(session, fake_run):

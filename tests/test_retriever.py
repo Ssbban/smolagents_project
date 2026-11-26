@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.RetrieverTool as rt
-from tools.RetrieverTool import RetrieverTool
+import tools.retriever as rt
+from tools.retriever import RetrieverTool
 
 PAGES = [
     {"text": "alpha|beta|alpha", "title": "Input file tags", "source": "https://docs.ipi-code.org/input-tags.html"},

@@ -79,7 +79,7 @@ def parse_slurm_limit(text: str) -> Optional[int]:
 
 
 def _require_text(name: str, value: Optional[str]) -> str:
-    if value is None or not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} is required")
     _reject_control_chars(name, value)
     return value.strip()
