@@ -15,6 +15,34 @@ How a defect was observed:
 
 Status is "fixed" with the test that shows the new behaviour, or "open" with the reason.
 
+
+## Summary
+
+The behaviours measured on v1, the v1 code that causes each, and the test that shows the new behaviour.
+
+| v1 behaviour (measured) | v1 code at 3fc8270 | Now | Test |
+|---|---|---|---|
+| Person answers after 35 s: time-out errors after the sub-agent succeeded | `main.py:71-115`, no `executor_kwargs` (default 30 s) | No executor time-out; time-outs inside blocking tools | `test_agents.py::test_a_no_agent_has_an_executor_time_out` (configuration only) |
+| Cancel at plan review: a sub-agent still ran and submitted | `tools/customize_plan.py:75` `agent.interrupt()` | Only the planning call runs; session goes on | `test_agents.py::test_b_cancel_at_plan_review_runs_nothing_and_the_session_goes_on` |
+| Ctrl+C at `User>`, in `user_input` or in a model call ends the CLI | `main.py:121`, `main.py:130` | Ends the turn; at the prompt ends cleanly | `test_agents.py::test_c1_ctrl_c_at_the_prompt_ends_the_session_cleanly`, `test_c_ctrl_c_inside_a_turn_leaves_a_usable_session`, `test_c3_ctrl_c_during_a_model_call_ends_only_that_turn` |
+| Generated code ran shell commands in all three agents | `main.py:77-82, 92-97, 109-113` | `import os`, `open`, `eval` ... blocked | `test_gate_probes.py::test_no_shell_no_files_no_modules_in_any_agent` |
+| A sub-agent submitted without any question | `tools/slurm_submit.py:13` | The tool asks; `n` means no `sbatch` | `test_agents.py::test_e_submit_without_review_asks_the_person_and_a_no_stops_it` |
+| `slurm_submit` accepted any file | `tools/slurm_submit.py:13` | Refused: 4 spellings of a hand-written file | `test_gate_probes.py::test_no_tool_runs_sbatch_on_a_file_it_did_not_generate` |
+| Sub-agent 503 or step limit: "Task completed successfully!" | `main.py:127-129` | Dict with `status` `error` / `incomplete` | `test_agents.py::test_f2_provider_error_in_a_sub_agent_reaches_the_manager_as_status_error`, `test_f3_sub_agent_out_of_steps_is_incomplete` |
+| Manager provider error: printed, loop went on (no defect) | `main.py:130-134` | Kept: turn `failed: <error>`, next turn answered | `test_agents.py::test_f4_provider_error_at_planning_fails_the_turn_and_the_session_goes_on` |
+| Slurm tools on a machine without Slurm: raw `[WinError 2]` | `tools/get_server_info.py:73` | `available: False` with a reason; `failed`; `UNKNOWN` | `test_slurm_config.py::test_slurm_config_without_slurm`, `test_slurm_submit.py::test_sbatch_missing_is_failed`, `test_job_status.py::test_without_slurm` |
+| MACE cases: junk in `#SBATCH`, `r_max "5.0"` refused, `~` never expanded | `tools/specs.py:154-157`, `tools/mace_cli_schema.py:194-197`, `tools/mace_script.py:25-26` | Junk refused, `"5.0"` accepted, `"$HOME/..."` | `test_mace_script.py::test_rejected_cases_write_nothing`, `test_accepted_cases` |
+| Two files in one second: second overwrote the first | `tools/mace_script.py:220-221` | One bundle per job; never overwritten | `test_session.py::test_write_artifact_refuses_overwrite` |
+| i-PI: socket pointed at another host, `total_steps "-5 abc"`, two `<prng>` accepted | `tools/ipi_InputFile_generator.py:95-136` | Refused or reported by i-PI's loader | `test_ipi_generators.py::test_baseline_input_cases` |
+| A temperature without units is read in atomic units | no check | Reported: "300" is 9.47e7 K | `test_ipi_check.py::test_the_unit_trap_is_reported_with_the_value_ipi_understood` |
+| i-PI job always requested a GPU | `tools/ipi_submit_generator.py:23-24` | GPU only for a `cuda` client | `test_ipi_generators.py::test_gpu_request_follows_the_client_device` |
+| `github_fetch`: HTML for blob URLs, no time-out, any URL | `tools/github_fetch.py:15` | Raw URL, GitHub only, 30 s, 1 MB | `test_fetch_retriever_main.py::test_github_fetch_uses_timeout_and_raw_url` |
+| Retriever: chunks up to 600 tokens (model reads 512), no sources | `tools/RetrieverTool.py:36-43, 83-89` | At most 512 tokens; a source line per passage | `test_retriever.py::test_each_passage_is_followed_by_its_source` (the 512 check is a test that is skipped without the retrieval packages) |
+| About 52 s to the first prompt (index built at import) | `main.py:6`, `tools/RetrieverTool.py:13-62` | 1.72 s median of 5, index built on first query | `test_agents.py::test_building_the_agents_needs_no_retrieval_packages` (imports only, not the time) |
+
+Test files are under `tests/`. Both start-up times come from one Windows machine: v1 about 52 s (with network
+access); now the median of 5 runs with placeholder settings and no model call.
+
 ## Agent layer
 
 | Id | What v1 did | Where (3fc8270) | Observed | Status |
@@ -39,7 +67,7 @@ Status is "fixed" with the test that shows the new behaviour, or "open" with the
 | SUB-1 | `slurm_submit` ran `sbatch` on any path: no check that a tool wrote it, that it was shown, or that the person agreed; no time-out; job id not parsed | `tools/slurm_submit.py:13` | scripted | fixed: `test_agents.py::test_e_submit_without_review_asks_the_person_and_a_no_stops_it`, `test_gate_probes.py::test_no_tool_runs_sbatch_on_a_file_it_did_not_generate`, `test_slurm_submit.py::test_changed_after_generation_is_refused`, `test_gate_probes.py::test_a_submitted_script_is_not_submitted_twice` |
 | SUB-2 | Review and "type yes" existed only as prompt text | `prompts/mace_instruction.txt:38-45` | reading | fixed: the tool asks (`test_slurm_submit.py::test_ask_answers`, `test_declined_never_calls_sbatch`); `test_prompts.py::test_no_prompt_asks_the_person_to_type_yes` |
 | SUB-3 | `ipi_agent` had no submit tool; its "Submit" step only generated a script | `main.py:58-69` | reading | fixed: `slurm_submit`, `preflight`, `job_status` on `ipi_agent`; exercised by `test_gate_probes.py::test_no_tool_runs_sbatch_on_a_file_it_did_not_generate[ipi_agent]` |
-| SUB-4 | Without Slurm, `slurm_config` and `slurm_submit` raised a bare `FileNotFoundError: [WinError 2]` naming no program | `tools/get_server_info.py:73`, `tools/slurm_submit.py:13` | scripted | fixed: `test_server_info.py::test_slurm_config_without_slurm`, `test_slurm_submit.py::test_sbatch_missing_is_failed`, `test_slurm_status.py::test_without_slurm` |
+| SUB-4 | Without Slurm, `slurm_config` and `slurm_submit` raised a bare `FileNotFoundError: [WinError 2]` naming no program | `tools/get_server_info.py:73`, `tools/slurm_submit.py:13` | scripted | fixed: `test_slurm_config.py::test_slurm_config_without_slurm`, `test_slurm_submit.py::test_sbatch_missing_is_failed`, `test_job_status.py::test_without_slurm` |
 | SUB-5 | Partition and time limit were checked against the cluster only by a prompt sentence | `prompts/mace_instruction.txt:15-17` | reading | fixed: `test_slurm_submit.py::test_time_over_partition_limit_is_an_error`, `test_unprobed_cluster_is_a_warning_shown_to_the_person` |
 | SUB-6 | File names had second resolution: 9 MACE scripts gave 7 files, 4 i-PI job scripts 1, 5 clients 1 | `tools/mace_script.py:220-221`, `tools/ipi_runase_generator.py:89-90`, `tools/ipi_submit_generator.py:132-133`, `tools/ipi_InputFile_generator.py:252-253` | tool case | fixed: `test_session.py::test_write_artifact_refuses_overwrite`, `test_mace_script.py::test_two_calls_give_two_bundles`, `test_ipi_generators.py::test_second_client_and_second_job_get_new_names` |
 | SUB-7 | Scripts written on Windows had CRLF line endings | `tools/mace_script.py:229`, `tools/ipi_submit_generator.py:144` | tool case | fixed: `test_session.py::test_write_artifact_lf_bytes_and_registration` |

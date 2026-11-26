@@ -22,6 +22,27 @@ that performs it, with state kept by code in a session ledger (`tools/session.py
 the preview and the "type yes" rule in prompt text; a scripted model that skipped them submitted a job. Now the
 prompts give guidance, and a tool refuses, or asks the person, whatever order the model chooses.
 
+## Who decides what
+
+| The agents decide | The tools enforce in code | The person decides |
+|---|---|---|
+| Which sub-agent gets a request, in what order | Only a job script written by this session's generator tools, unchanged since (sha256), is submitted, and only once (`tools/slurm_submit.py`, `tools/session.py`) | Approve, modify or cancel each plan of the manager |
+| What to ask the person, and when | Pre-flight before every submission: `#SBATCH` header, partition and time limit against the cluster probe, every file of the bundle unchanged (`tools/preflight.py`) | Each submission: `y`, `n`, or what to change |
+| Which template, options and values to try | The question to the person is asked by the submit tool at call time; without a terminal, or at end of input, it declines (`tools/approval.py`) | Answers to the agents' questions (paths, partition, model) |
+| Which tools to call, and when to stop | Generated code may import `json` besides smolagents' base modules (`math`, `re`, ...); `os`, `subprocess`, `sys`, `open` are blocked (`agents.py`) | Whether a failed job is resubmitted |
+| What to report back | A sub-agent's status comes from the run state or the exception; its files and jobs from the ledger (`agents.py` `ScienceAgent`) | |
+| | Cancel at plan review stops the turn before any action (`tools/plan_review.py`) | |
+| | Every input problem in one error; names and paths in a restricted alphabet (`tools/specs.py`) | |
+| | MACE options checked against the option table of the job's MACE when it is visible, else a local MACE or release 0.3.17; the script records which (`tools/mace_cli_schema.py`, `tools/mace_script.py`) | |
+| | i-PI input loaded by i-PI itself; only listed paths editable; values without units reported (`tools/ipi_check.py`, `tools/ipi_InputFile_generator.py`) | |
+| | Socket, structure file and client count agree across input, client and job script (`tools/ipi_runase_generator.py`, `tools/ipi_submit_generator.py`); on the cluster a structure path must exist (`tools/ipi_InputFile_generator.py`) | |
+| | A structure the agent works out reaches the disk only through `write_structure`: known elements, one position per atom, a right-handed cell, no atoms closer than 0.5 Å (`tools/structure_writer.py`) | |
+| | Generated files are never overwritten and have LF line endings (`tools/session.py`) | |
+| | Job scripts run with `--export=NONE`: nothing comes from the shell the agent was started in; the i-PI job's conda environment has `i-pi` and MACE when it is visible (`tools/specs.py`, `tools/ipi_submit_generator.py`) | |
+| | Label keys given for training are in the first frame of the training file (`tools/mace_script.py`) | |
+| | `job_output` reads only the bundle of a job submitted in this session (`tools/job_output.py`) | |
+| | `sbatch` without an answer in 60 s gives status `unknown`, never an invented job id (`tools/slurm_submit.py`) | |
+
 ## Mechanisms
 
 ### Delegation contract
@@ -74,7 +95,7 @@ files yourself".
 
 What: Cancel (or end of input) at the plan review raises `UserCancelled`, a `BaseException`. `main.py` catches it
 and ends the turn; the session goes on.
-Where: `tools/customize_plan.py` `interrupt_after_plan`; `main.py` `run_turn`.
+Where: `tools/plan_review.py` `interrupt_after_plan`; `main.py` `run_turn`.
 smolagents behaviour: `_run_stream` runs the PlanningStep callbacks in `_finalize_step` (`agents.py:566`) before
 the action step (`569-604`) and outside its `try`. `agent.interrupt()` (`754-756`) only sets a flag that is read at
 the top of the next loop (`546`), after one more action step. Raising in the callback is what stops the turn:
@@ -135,7 +156,7 @@ options. The ten i-PI templates are vendored at one upstream commit with sha256 
 (`tools/ipi_templates/SOURCE.json`), with one catalogue (`catalog.json`). `ipi_tag_help` reads the installed i-PI's
 input classes. The retriever's corpus and embedding model are pinned to revisions.
 Where: `tools/mace_cli_schema.py` `load_mace_cli_schema`; `tools/ipi_InputFile_generator.py`; `tools/ipi_help.py`;
-`tools/RetrieverTool.py`.
+`tools/retriever.py`.
 Rejected: fetching from GitHub `main` on every call (v1: four preprocess-only MACE options accepted, a dump of
 about 39,000 characters in the context, templates from a moving third-party branch); fetching four i-PI source
 files into the context (about 88,000 characters; 87,886 in i-PI 3.3.1) to look up a tag. v1's code gives 39,414
@@ -201,7 +222,7 @@ Only what informed a decision here. None of the four asks a person before a side
 
 | Limit | What would lift it |
 |---|---|
-| Two live-model sessions (three requests, one model; README "First run on a real cluster") | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
+| Two live-model sessions (three requests, one model; docs/CLUSTER_RUN.md) | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
 | One cluster (Slurm 19.05, CentOS 7); i-PI jobs ran only with templates `03-NVT-SVR` and `00-NVE` | The other templates and another site's Slurm |
 | Manager code can reach a sub-agent object: import list (expected-failure test), API key and tools (one-off probe, no test) | A handle in `managed_agents`, giving up `visualize()` and `save()`; or sub-agents in another process |
 | The local interpreter is not a sandbox | Operating-system isolation around the whole process |
