@@ -9,7 +9,7 @@ from typing import Mapping, Optional
 
 from dotenv import dotenv_values
 
-DEFAULT_API_BASE = "https://api.deepseek.com/v1"
+DEFAULT_API_BASE = "https://api.anthropic.com/v1"  # OpenAI-compatible; the provider the agent was tested with
 
 
 class SettingsError(ValueError):
