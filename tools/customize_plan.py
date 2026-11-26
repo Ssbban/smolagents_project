@@ -1,4 +1,4 @@
-from smolagents import PlanningStep
+from smolagents import LogLevel, PlanningStep
 
 
 class UserCancelled(BaseException):
@@ -67,7 +67,8 @@ def interrupt_after_plan(memory_step, agent):
     if not isinstance(memory_step, PlanningStep):
         return
 
-    display_plan(memory_step.plan)
+    if agent.logger.level < LogLevel.INFO:  # from INFO on, smolagents has just printed the plan itself
+        display_plan(memory_step.plan)
 
     choice = get_user_choice()
 

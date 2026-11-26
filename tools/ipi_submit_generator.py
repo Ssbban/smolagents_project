@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from smolagents.tools import tool
 
 from tools.ipi_check import SOCKETS_DIR, check_input, links
+from tools.mace_cli_schema import conda_env_dir, mace_in_conda_env
 from tools.preflight import Problem, register
 from tools.session import Artifact, Session, get_session, unused_name
 from tools.specs import ClusterSpec, IPISubmitSpec, check, raise_problems
@@ -27,6 +28,8 @@ def render_ipi_submit_script(spec: IPISubmitSpec) -> str:
     body = [
         f"SOCKET={SOCKETS_DIR}{spec.socket_address}",
         f"CLIENTS={spec.num_force_providers}",
+        "# Unbuffered, so that log.i-pi and the client's output show the run while it goes (else only at the end).",
+        "export PYTHONUNBUFFERED=1",
         "",
         "# A socket file left by an earlier run of this job (requeue, crash) would stop i-PI from starting.",
         'rm -f "$SOCKET"',
@@ -86,6 +89,26 @@ def _max_clients(facts: Dict[str, Any]) -> int:
     return facts.get("nbeads", 1) * facts.get("replicas", 1)
 
 
+def _has_ipi(conda_path: Optional[str], env: str) -> bool:
+    env_dir = conda_env_dir(conda_path, env)
+    return env_dir is not None and (env_dir / "bin" / "i-pi").is_file()
+
+
+def _environment_problems(session: Session, conda_path: Optional[str], conda_env: Optional[str],
+                          ipi_env_path: Optional[str]) -> list[str]:
+    """What the job's conda environment lacks, when it is visible from here: i-pi (unless ipi_env_path provides
+    it), and MACE for run_ase.py."""
+    if conda_env_dir(conda_path, conda_env) is None:
+        return []
+    problems = []
+    if not ipi_env_path and not _has_ipi(conda_path, conda_env):
+        with_ipi = [env for env in (session.cluster or {}).get("available_conda_envs", []) if _has_ipi(conda_path, env)]
+        problems.append(f"conda environment {conda_env!r} has no i-pi; environments with i-pi: {with_ipi}")
+    if not mace_in_conda_env(conda_path, conda_env):
+        problems.append(f"conda environment {conda_env!r} has no MACE, which the ASE client imports")
+    return problems
+
+
 @tool
 def ipi_submit_generator(
     ipi_input_path: str,
@@ -95,6 +118,7 @@ def ipi_submit_generator(
     partition: str = None,
     nodes: int = 1,
     ntasks: int = 1,
+    cpus_per_task: Optional[int] = None,
     gpus_per_node: Optional[int] = None,
     memory: str = "20G",
     conda_env: str = None,
@@ -118,9 +142,10 @@ def ipi_submit_generator(
         partition: Slurm partition name.
         nodes: Number of Slurm nodes.
         ntasks: Number of Slurm tasks.
+        cpus_per_task: CPU cores shared by i-PI and the client(s), e.g. 4 to 8 for a cpu client. Left out: one core.
         gpus_per_node: GPUs to request; default: 1 for a cuda client, 0 for a cpu client.
         memory: Slurm memory allocation, for example 20G.
-        conda_env: Conda environment with i-PI, ASE and the calculator installed.
+        conda_env: Conda environment with i-PI, ASE and the calculator (mace-torch) installed; checked when visible from here.
         conda_path: Path to conda.sh.
         ipi_env_path: Optional script to source before conda (e.g. an i-PI source checkout's env.sh); usually not needed.
         num_force_providers: Number of client processes. One is enough for a single classical system; up to
@@ -147,6 +172,7 @@ def ipi_submit_generator(
         partition=partition,
         nodes=nodes,
         ntasks=ntasks,
+        cpus_per_task=cpus_per_task,
         gpus_per_node=gpus_per_node,
         memory=memory,
         conda_env=conda_env,
@@ -163,6 +189,7 @@ def ipi_submit_generator(
         max_force_providers=_max_clients(facts),
         device=device,
     )
+    problems += _environment_problems(session, conda_path, conda_env, ipi_env_path)
     raise_problems("ipi_submit_generator", problems + spec.problems())
 
     script_content = render_ipi_submit_script(spec)
@@ -205,6 +232,8 @@ def check_ipi_job(artifact: Artifact, session: Session) -> list[Problem]:
         staged = members.get(structure)
         if staged is None or staged.kind != "structure":
             problems.append(Problem("error", f"the structure {structure!r} is not a staged file of {artifact.bundle}"))
+    elif not Path(structure).is_file() and session.cluster and session.cluster.get("available"):
+        problems.append(Problem("error", f"the structure {structure} does not exist"))
     elif not Path(structure).is_file():
         problems.append(Problem("warning", f"the structure {structure} is not readable here; it must exist on the "
                                            "compute nodes"))

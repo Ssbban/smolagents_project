@@ -8,7 +8,7 @@ from tools.ipi_runase_generator import ipi_runase_generator
 from tools.ipi_submit_generator import ipi_submit_generator
 from tools.preflight import preflight
 
-WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.757 0.586 0.0\nH -0.757 0.586 0.0\n"
+WATER = "3\nLattice=\"10.0 0.0 0.0 0.0 10.0 0.0 0.0 0.0 10.0\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\nO 0.0 0.0 0.0\nH 0.757 0.586 0.0\nH -0.757 0.586 0.0\n"
 SUBMIT = dict(job_name="ipi_water", time="02:00:00", partition="cpu", memory="8G",
               conda_env="ipi", conda_path="/opt/conda/etc/profile.d/conda.sh")  # fmt: skip
 CLUSTER_UNKNOWN = "cluster facts unknown"
@@ -161,6 +161,8 @@ def test_job_script_fails_on_errors_waits_for_the_socket_and_needs_no_source_che
     assert "i-pi input.xml &> log.i-pi &" in text and "    python run_ase.py &" in text
     assert 'wait "$IPI_PID"' in text and "CLIENTS=1" in text
     assert "runs/" not in text and b"\r\n" not in Path(job["script_path"]).read_bytes()
+    # Seen live: log.i-pi read with job_output during a run was empty, Python buffering it until the end.
+    assert text.index("export PYTHONUNBUFFERED=1") < text.index("i-pi input.xml")
 
 
 @pytest.mark.parametrize("template, client, submit", [
@@ -308,3 +310,76 @@ def test_submit_refuses_client_of_another_bundle(water):
     client = ipi_runase_generator(ipi_input_path=second["script_path"], calculator="mace_mp")
     with pytest.raises(ValueError, match="is not in the bundle of"):
         ipi_submit_generator(ipi_input_path=first["script_path"], ase_path=client["script_path"], **SUBMIT)
+
+
+def test_a_structure_without_a_cell_is_refused(session):
+    # i-PI stops at start-up with "Initializer could not initialize the cell" (checked with i-PI 3.1.5).
+    Path("molecule.xyz").write_text("3\nwater\nO 0 0 0\nH 0.757 0.586 0\nH -0.757 0.586 0\n")
+    with pytest.raises(ValueError, match="has no cell, and i-PI cannot start without one"):
+        ipi_InputFile_generator("03-NVT-SVR", "molecule.xyz")
+    assert session.artifacts == []
+    cell = {"parent_xpath": "./system/initialize", "tag": "cell", "attrs": {"mode": "manual", "units": "angstrom"},
+            "text": "[10, 0, 0, 0, 10, 0, 0, 0, 10]"}
+    assert ipi_InputFile_generator("03-NVT-SVR", "molecule.xyz", modifications={"cell": cell})["facts"]["nbeads"] == 1
+
+
+def test_modifications_may_be_a_list(water):
+    xml = ipi_InputFile_generator("03-NVT-SVR", water, modifications=[{"xpath": "./total_steps", "text": "200"}])
+    assert xml["facts"]["total_steps"] == 200
+    with pytest.raises(ValueError, match="operation 1.xpath './nope' is not an editable path"):
+        ipi_InputFile_generator("03-NVT-SVR", water, modifications=[{"xpath": "./nope", "text": "1"}])
+
+
+def test_a_model_file_must_be_an_absolute_path(water):
+    xml = ipi_InputFile_generator(LANGEVIN, water)
+    Path("trained.model").write_text("weights")
+    absolute = str(Path("trained.model").resolve())
+    with pytest.raises(ValueError, match=f"model 'trained.model' must be an absolute path.*from here that is {absolute}"):
+        ipi_runase_generator(ipi_input_path=xml["script_path"], calculator="mace_mp",
+                             calculator_kwargs={"model": "trained.model"})
+    for model in (absolute, "medium", "https://github.com/ACEsuit/mace-mp/releases/download/mace_mp_0/m.model"):
+        ase = ipi_runase_generator(ipi_input_path=xml["script_path"], calculator="mace_mp",
+                                   calculator_kwargs={"model": model})
+        assert repr(model) in ase["script_content"]
+
+
+def test_on_the_cluster_the_model_directory_must_exist(water, session):
+    # Seen live: runs/<session>/01-mace/x.model, which the tools return, made absolute from the home directory.
+    session.cluster = {"available": True, "partitions": []}
+    xml = ipi_InputFile_generator(LANGEVIN, water)
+    wrong = str(Path.home() / "no-such-dir" / "ice_small.model")
+    with pytest.raises(ValueError, match=f"the directory .*no-such-dir does not exist; the paths the tools return are "
+                                         f"relative to {Path.cwd()}"):
+        ipi_runase_generator(ipi_input_path=xml["script_path"], calculator="mace_mp", calculator_kwargs={"model": wrong})
+    pending = str(Path(xml["bundle"]).resolve() / "not_trained_yet.model")  # the training job may still run
+    ipi_runase_generator(ipi_input_path=xml["script_path"], calculator="mace_mp", calculator_kwargs={"model": pending})
+
+
+def test_the_jobs_environment_must_have_ipi_and_mace(water, session, tmp_path):
+    # Seen on the first cluster: an environment without i-pi, which only ran because sbatch exported the PATH.
+    base = tmp_path / "conda"
+    (base / "etc" / "profile.d").mkdir(parents=True)
+    (base / "etc" / "profile.d" / "conda.sh").write_text("")
+    for env, has_ipi, has_mace in [("mace_only", False, True), ("ipi_only", True, False), ("both", True, True)]:
+        if has_ipi:
+            (base / "envs" / env / "bin").mkdir(parents=True)
+            (base / "envs" / env / "bin" / "i-pi").write_text("")
+        if has_mace:
+            (base / "envs" / env / "lib" / "python3.11" / "site-packages" / "mace" / "tools").mkdir(parents=True)
+            (base / "envs" / env / "lib" / "python3.11" / "site-packages" / "mace" / "tools" / "arg_parser.py").touch()
+    session.cluster = {"available": True, "partitions": [], "available_conda_envs": ["mace_only", "ipi_only", "both"]}
+    conda_path = str(base / "etc" / "profile.d" / "conda.sh")
+    with pytest.raises(ValueError, match=r"'mace_only' has no i-pi; environments with i-pi: \['ipi_only', 'both'\]"):
+        make_job(conda_env="mace_only", conda_path=conda_path)
+    assert make_job(conda_env="mace_only", conda_path=conda_path, ipi_env_path="/opt/i-pi/env.sh")  # i-pi from there
+    with pytest.raises(ValueError, match="'ipi_only' has no MACE"):
+        make_job(conda_env="ipi_only", conda_path=conda_path)
+    assert "conda activate both" in make_job(conda_env="both", conda_path=conda_path)[2]["script_content"]
+
+
+def test_on_the_cluster_a_structure_path_must_exist(session):
+    # Seen live: the agent probed guessed paths, and each was accepted, /nonexistent/definitely/fake.xyz too.
+    session.cluster = {"available": True, "partitions": []}
+    with pytest.raises(ValueError, match="'/nonexistent/fake.xyz' does not exist here; .*write_structure"):
+        ipi_InputFile_generator("03-NVT-SVR", "/nonexistent/fake.xyz")
+    assert session.artifacts == []

@@ -16,7 +16,7 @@ from agents import build_agents
 from config import Settings
 from tools.approval import Decision
 
-WATER = "3\nwater\nO 0 0 0\nH 0.757 0.586 0\nH -0.757 0.586 0\n"
+WATER = "3\nLattice=\"10.0 0.0 0.0 0.0 10.0 0.0 0.0 0.0 10.0\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\nO 0 0 0\nH 0.757 0.586 0\nH -0.757 0.586 0\n"
 AGENTS = ["manager", "mace_agent", "ipi_agent"]
 
 
@@ -116,10 +116,13 @@ def test_no_tool_runs_sbatch_on_a_file_it_did_not_generate(gate, session):
 statuses = [slurm_submit(script_path=p)['status'] for p in ['job.sh', './job.sh', 'job.sh ', '../job.sh']]
 statuses.append(preflight(script_path='job.sh')['ok'])
 statuses.append(job_status(job_id='1')['state'])
-show_content(script='job.sh')
 statuses
 """)
     assert result == ["refused"] * 4 + [False, "UNKNOWN"]
+    with pytest.raises(InterpreterError, match="not a file generated in this session"):
+        run("show_content(script='job.sh')")
+    with pytest.raises(InterpreterError, match="was not submitted in this session"):
+        run("job_output(job_id='1', name='../../job.sh')")
     assert sbatch_calls == [] and shown == [] and session.jobs == []
     with pytest.raises(InterpreterError, match="job_id must be the number"):
         run("job_status(job_id='1; sbatch job.sh')")

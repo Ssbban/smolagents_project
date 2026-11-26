@@ -210,6 +210,15 @@ def test_no_environment_is_guessed_when_two_have_mace(session, conda, monkeypatc
     assert job_environment(None, None)[1] is None
 
 
+def test_the_look_up_asks_which_environment_when_two_have_mace(session, conda, nothing_importable):
+    # Seen on the first cluster: three environments with MACE 0.3.10 to 0.3.13, and the 0.3.17 table was shown.
+    install_mace(Path(conda).parents[2] / "envs" / "other" / "lib" / "python3.11" / "site-packages", "0.3.17", "0.3.17")
+    session.cluster = {"available": True, "conda_activation_path": conda, "available_conda_envs": ["mace", "other"]}
+    with pytest.raises(ValueError, match=r"several conda environments have MACE.*: mace \(0\.3\.13\), other \(0\.3\.17\)"):
+        mace_cli_schema(names=["r_max"])
+    assert mace_cli_schema(names=["r_max"], conda_env="mace")["mace_version"] == "0.3.13"
+
+
 # --- the look-up tool ----------------------------------------------------------------------------
 
 

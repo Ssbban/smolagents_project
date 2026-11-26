@@ -113,8 +113,9 @@ def _apply(root: ET.Element, editable: set, name: str, operation: Any) -> None:
         raise ValueError(f"{name} must include either xpath for an update or parent_xpath plus tag for an append block.")
 
 
-def _structure(path: Any) -> tuple:
-    """(text, name) of a structure file readable here, or (None, path) for an absolute path on the cluster."""
+def _structure(path: Any, on_cluster: bool) -> tuple:
+    """(text, name) of a structure file readable here, or (None, path) for an absolute path on the cluster when the
+    cluster's files are not visible from here."""
     if not isinstance(path, str) or not path.strip():
         raise ValueError("structure_path is required: the initial structure i-PI and the client start from")
     name = PurePosixPath(path.strip().replace("\\", "/")).name
@@ -131,8 +132,27 @@ def _structure(path: Any) -> tuple:
             raise ValueError(f"structure_path {path!r} is not a text structure file (xyz, extxyz, cif, ...)") from None
     if not PurePosixPath(path).is_absolute():
         raise ValueError(f"structure_path {path!r} is not a file on this machine; give a file readable here (it is "
-                         "copied into the job's bundle) or its absolute path on the cluster (i-PI does not expand '~')")
+                         "copied into the job's bundle) or its absolute path on the cluster (i-PI does not expand '~'). "
+                         "Without a file, build the structure and write it with write_structure")
+    if on_cluster:  # the agent runs on a login node, which sees the shared file systems
+        raise ValueError(f"structure_path {path!r} does not exist here; give a file this login node can read (copy "
+                         "one that only compute nodes see to the home or project directory), or build the structure "
+                         "and write it with write_structure")
     return None, _require_safe_path("structure_path", path)
+
+
+def _cell_problems(text: Optional[str], name: str, root: ET.Element) -> List[str]:
+    """i-PI cannot start without a cell ("Initializer could not initialize the cell"): an XYZ file needs an extended
+    XYZ Lattice=, unless the input gives a <cell> in <initialize>."""
+    if text is None or PurePosixPath(name).suffix.lower() not in (".xyz", ".extxyz"):
+        return []
+    comment = text.split("\n", 2)[1] if text.count("\n") >= 2 else ""
+    if "Lattice=" in comment or root.find(".//initialize/cell") is not None:
+        return []
+    return [f"structure {name!r} has no cell, and i-PI cannot start without one: give the file an extended XYZ "
+            'Lattice="ax ay az bx by bz cx cy cz" on its second line, or append under ./system/initialize '
+            "{\"tag\": \"cell\", \"attrs\": {\"mode\": \"manual\", \"units\": \"angstrom\"}, "
+            "\"text\": \"[ax, ay, az, bx, by, bz, cx, cy, cz]\"} (a box large enough around a molecule)"]
 
 
 def socket_address(bundle: str) -> str:
@@ -185,13 +205,17 @@ def ipi_InputFile_generator(
     Args:
         template_type: Template name; ipi_template_schema() lists them.
         structure_path: Initial structure, read by i-PI and the client with ASE (extended XYZ with Lattice=... for a
-            periodic cell). A file readable here is copied into the bundle; otherwise the absolute path on the cluster.
-        modifications: Named operations. An update is {"xpath": <path from ipi_template_schema>, "text": ...,
-            "attrs": {...}} and keeps the units attribute unless you change it; an append block is
-            {"parent_xpath": "." or a listed path, "tag": ..., "attrs": {...}, "text": ..., "fields": [blocks]}.
+            periodic cell). A file readable here is copied into the bundle, such as the structure_path that
+            write_structure returns; otherwise the absolute path on the cluster.
+        modifications: Operations, as a dict of name -> operation or as a list. An update is {"xpath": <path from
+            ipi_template_schema>, "text": ..., "attrs": {...}} and keeps the units attribute unless you change it; an
+            append block is {"parent_xpath": "." or a listed path, "tag": ..., "attrs": {...}, "text": ...,
+            "fields": [blocks]}.
         simulation_attrs: Attributes of the root <simulation> tag: verbosity, threading, mode, safe_stride, floatformat.
     """
     session = get_session()
+    if isinstance(modifications, list):  # operation names only label error messages
+        modifications = {f"operation {number}": operation for number, operation in enumerate(modifications, 1)}
     spec = IPIInputSpec(template_type=template_type, modifications=modifications or {},
                         simulation_attrs=simulation_attrs or {})  # fmt: skip
     problems = spec.problems(templates=CATALOG)
@@ -202,7 +226,10 @@ def ipi_InputFile_generator(
             check(problems, _apply, root, editable, str(name), operation)
         for attr, value in spec.simulation_attrs.items():
             root.set(str(attr), str(value))
-    structure = check(problems, _structure, structure_path)
+    on_cluster = bool(session.cluster and session.cluster.get("available"))
+    structure = check(problems, _structure, structure_path, on_cluster)
+    if not problems:
+        problems += _cell_problems(*structure, root)
     if not problems:
         result = check_input(ET.tostring(root, encoding="unicode"))
         problems += result["problems"]

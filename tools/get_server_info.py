@@ -52,11 +52,15 @@ def _get_conda_envs() -> List[str]:
 
 
 def _get_available_modules() -> List[str]:
-    """Gets a list of available environment modules (POSIX only: `module` is a shell function)."""
+    """Gets a list of available environment modules (POSIX only: `module` is a shell function).
+
+    `module -t avail` (terse) prints one name per line, with "<directory>:" headers and "<family>/" lines.
+    """
     if os.name != "posix":
         return []
-    stdout, _ = run_command(["bash", "-lc", "module avail 2>&1"])
-    return [line.strip() for line in (stdout or "").splitlines() if line.strip()]
+    stdout, _ = run_command(["bash", "-lc", "module -t avail 2>&1"])
+    lines = (line.strip().removesuffix("(default)") for line in (stdout or "").splitlines())
+    return [line for line in lines if line and not line.endswith((":", "/"))]
 
 
 def parse_partitions(text: str) -> List[Dict[str, Any]]:
@@ -81,31 +85,34 @@ def parse_partitions(text: str) -> List[Dict[str, Any]]:
 
 
 def parse_nodes(text: str) -> List[Dict[str, Any]]:
-    """Rows of `sinfo -N -o '%N|%T|%c|%G'`."""
-    nodes: List[Dict[str, Any]] = []
+    """Rows of `sinfo -N -o '%N|%P|%T|%c|%G'`, one per node with the partitions it belongs to
+    (sinfo prints a node once per partition)."""
+    nodes: Dict[str, Dict[str, Any]] = {}
     for line in text.strip().splitlines():
         parts = line.split("|")
-        if len(parts) != 4:
+        if len(parts) != 5:
             continue
-        name, state, cpus, gres = parts
+        name, partition, state, cpus, gres = parts
         gres_parts = gres.split(":")
         # Format can be gpu:model:count or gpu:count
         gpu_model = gres_parts[1] if gres.startswith("gpu:") and len(gres_parts) == 3 else None
-        nodes.append({
+        node = nodes.setdefault(name, {
             "name": name,
+            "partitions": [],
             "state": state,
             "cpus": int(cpus) if cpus.isdigit() else 0,
             "gres": gres,
             "gpu_model": gpu_model,
         })
-    return nodes
+        node["partitions"].append(partition.rstrip("*"))
+    return list(nodes.values())
 
 
 def probe_cluster() -> Dict[str, Any]:
     partitions_out, reason = run_command(["sinfo", "--noheader", "-o", "%P|%a|%F|%l"])
     nodes_out = None
     if partitions_out is not None:
-        nodes_out, reason = run_command(["sinfo", "--noheader", "-N", "-o", "%N|%T|%c|%G"])
+        nodes_out, reason = run_command(["sinfo", "--noheader", "-N", "-o", "%N|%P|%T|%c|%G"])
     available = partitions_out is not None and nodes_out is not None
     return {
         "available": available,
@@ -130,7 +137,7 @@ def slurm_config(refresh: bool = False) -> Dict[str, Any]:
       - "partitions": a list of partitions, each being a dict with
            name (str), state (str), avail_nodes (int), total_nodes (int), max_time (str)
       - "nodes": a list of nodes, each being a dict with
-           name (str), state (str), cpus (int), gres (str), gpu_model (str|None)
+           name (str), partitions (list of str), state (str), cpus (int), gres (str), gpu_model (str|None)
       - "conda_activation_path": path to the conda.sh script, or None if not found.
       - "available_conda_envs": a list of available conda environment names.
       - "available_modules": a list of available environment module names.

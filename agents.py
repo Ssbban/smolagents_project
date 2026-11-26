@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.resources
+import re
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,7 @@ from tools.ipi_help import ipi_tag_help
 from tools.ipi_InputFile_generator import ipi_InputFile_generator, ipi_template_schema
 from tools.ipi_runase_generator import ipi_runase_generator
 from tools.ipi_submit_generator import ipi_submit_generator
+from tools.job_output import job_output
 from tools.mace_cli_schema import mace_cli_schema
 from tools.mace_script import MACE_script
 from tools.preflight import preflight
@@ -28,6 +30,7 @@ from tools.session import get_session
 from tools.show_content import show_content
 from tools.slurm_status import job_status
 from tools.slurm_submit import slurm_submit
+from tools.structure_writer import write_structure
 from tools.trace import step_callback
 
 PROMPTS = Path(__file__).parent / "prompts"
@@ -55,9 +58,34 @@ RESULT_DOC = """Returns a dict: "status" is "success", "incomplete" (it ran out 
 submitted (job_id, script, bundle, submitted_at, state); "agent" is its name."""
 
 
+# Claude models sometimes write an action in their own tool-call markup instead of a <code> block, and smolagents
+# rejects the step. Seen in the first live run, 4 of 35 actions: python_interpreter(code=...) and
+# final_answer(answer=...).
+TOOL_CALL_RE = re.compile(r'<invoke name="(python_interpreter|final_answer)">\s*<parameter name="(?:code|answer)">'
+                          r"(.*?)(?:</parameter>\s*(?:</invoke>)?|$)", re.DOTALL)
+
+
+def _code_of(match: re.Match) -> str:
+    tool, value = match[1], match[2]
+    return f"<code>{value}</code>" if tool == "python_interpreter" else f"<code>final_answer({value.strip()!r})</code>"
+
+
+def as_code_block(text: str) -> str:
+    """`text` with an action written as a tool call turned into the <code> block smolagents parses."""
+    return text if "<code>" in text else TOOL_CALL_RE.sub(_code_of, text)
+
+
+class CodeActionModel(OpenAIServerModel):
+    def generate(self, *args, **kwargs):
+        message = super().generate(*args, **kwargs)
+        if isinstance(message.content, str):
+            message.content = as_code_block(message.content)
+        return message
+
+
 def build_model(settings: Settings) -> OpenAIServerModel:
     extra = {} if settings.temperature is None else {"temperature": settings.temperature}
-    return OpenAIServerModel(
+    return CodeActionModel(
         model_id=settings.model_id,
         api_base=settings.api_base,
         api_key=settings.api_key,
@@ -121,7 +149,7 @@ def build_agents(model, settings: Settings) -> CodeAgent:
         description="Specialist for MACE potentials: writes, checks and submits MACE training jobs on Slurm, follows "
         "them, and answers questions about MACE and its options.\n" + RESULT_DOC,
         tools=[github_fetch, mace_cli_schema, MACE_script, show_content, preflight, slurm_submit, job_status,
-               slurm_config, DuckDuckGoSearchTool(), UserInputTool()],
+               job_output, slurm_config, DuckDuckGoSearchTool(), UserInputTool()],
         instructions=load_prompt("mace_instruction.txt"),
         prompt_templates=subagent_templates(),
         model=model,
@@ -132,11 +160,12 @@ def build_agents(model, settings: Settings) -> CodeAgent:
     )
     ipi_agent = ScienceAgent(
         name="ipi_agent",
-        description="Specialist for molecular dynamics with i-PI: writes the i-PI input, the ASE client and the job "
-        "script, checks and submits the job on Slurm, follows it, and answers questions about i-PI.\n" + RESULT_DOC,
+        description="Specialist for molecular dynamics with i-PI: builds the starting structure when the person has "
+        "none, writes the i-PI input, the ASE client and the job script, checks and submits the job on Slurm, follows "
+        "it, and answers questions about i-PI.\n" + RESULT_DOC,
         tools=[DuckDuckGoSearchTool(), UserInputTool(), RetrieverTool(), ipi_template_schema, ipi_tag_help,
-               ipi_InputFile_generator, ipi_runase_generator, ipi_submit_generator, show_content,
-               slurm_config, preflight, slurm_submit, job_status],
+               write_structure, ipi_InputFile_generator, ipi_runase_generator, ipi_submit_generator, show_content,
+               slurm_config, preflight, slurm_submit, job_status, job_output],
         instructions=load_prompt("ipi_instruction.txt"),
         prompt_templates=subagent_templates(),
         model=model,

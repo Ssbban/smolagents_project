@@ -66,3 +66,13 @@ class Settings:
         values = asdict(self)
         del values["api_key"]
         return values
+
+
+def shadowed_settings(environ: Optional[Mapping[str, str]] = None, dotenv_path: str | Path = ".env") -> list[str]:
+    """SMOLAGENTS_* names that .env sets but the environment overrides with another value.
+
+    A key exported in ~/.bashrc for another provider, next to an API base taken from .env, gives a 401.
+    """
+    environ = os.environ if environ is None else environ
+    return sorted(name for name, value in dotenv_values(dotenv_path).items()
+                  if name.startswith("SMOLAGENTS_") and value and environ.get(name, value) != value)

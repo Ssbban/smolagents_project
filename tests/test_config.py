@@ -1,6 +1,6 @@
 import pytest
 
-from config import DEFAULT_API_BASE, Settings, SettingsError
+from config import DEFAULT_API_BASE, Settings, SettingsError, shadowed_settings
 
 BASE = {"SMOLAGENTS_MODEL_ID": "some-model", "SMOLAGENTS_API_KEY": "sk-test"}
 
@@ -43,3 +43,13 @@ def test_dotenv_file_is_read_and_environment_wins(tmp_path):
     dotenv.write_text("SMOLAGENTS_MODEL_ID=from-file\nSMOLAGENTS_API_KEY=file-key\nSMOLAGENTS_MAX_STEPS=5\n")
     s = Settings.from_env({"SMOLAGENTS_MAX_STEPS": "7"}, dotenv_path=dotenv)
     assert (s.model_id, s.api_key, s.max_steps) == ("from-file", "file-key", 7)
+
+
+def test_environment_values_that_shadow_the_dotenv_file_are_named(tmp_path):
+    # Seen on the first cluster: an old key exported in ~/.bashrc beat the key in .env and the provider said 401.
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("SMOLAGENTS_API_KEY=key-from-file\nSMOLAGENTS_MODEL_ID=m\nSMOLAGENTS_API_BASE=\nOTHER=x\n")
+    environ = {"SMOLAGENTS_API_KEY": "key-from-shell", "SMOLAGENTS_MODEL_ID": "m", "SMOLAGENTS_API_BASE": "http://h/v1",
+               "OTHER": "y"}
+    assert shadowed_settings(environ, dotenv_path=dotenv) == ["SMOLAGENTS_API_KEY"]
+    assert shadowed_settings({}, dotenv_path=dotenv) == []

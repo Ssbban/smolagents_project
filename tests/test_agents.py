@@ -5,7 +5,10 @@ code, sub-agent provider error, sub-agent step limit, executor time-out, Ctrl+C)
 """
 
 import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -337,11 +340,36 @@ def test_an_approved_submission_is_printed_from_the_ledger(repl, session, fake_r
     assert "file written" not in out  # the script was written before this turn
 
 
-def test_building_the_agents_needs_no_retrieval_packages(session):
-    for name in ("langchain", "faiss", "datasets", "torch"):
-        assert name not in sys.modules
-    manager = build(ScriptedModel())
-    for agent in manager.managed_agents.values():
-        assert {"preflight", "slurm_submit", "job_status", "slurm_config"} <= set(agent.tools)
-    for name in ("langchain", "faiss", "datasets", "torch"):
-        assert name not in sys.modules
+BUILD_AND_LIST_MODULES = """
+import sys
+from fakemodel import ScriptedModel
+from agents import build_agents
+from config import Settings
+from tools.session import start_session
+start_session(sys.argv[1])
+manager = build_agents(ScriptedModel(), Settings(model_id="scripted", api_key="unused"))
+for agent in manager.managed_agents.values():
+    assert {"preflight", "slurm_submit", "job_status", "job_output", "slurm_config"} <= set(agent.tools)
+print(sorted(name for name in ("langchain", "faiss", "datasets", "torch") if name in sys.modules))
+"""
+
+
+def test_building_the_agents_needs_no_retrieval_packages(tmp_path):
+    # A fresh interpreter: where the retrieval packages are installed, test_retriever imports them into this one.
+    root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(root), str(root / "tests")])}
+    result = subprocess.run([sys.executable, "-c", BUILD_AND_LIST_MODULES, str(tmp_path)],
+                            capture_output=True, text=True, cwd=root, env=env, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+
+
+def test_a_code_action_written_as_a_tool_call_becomes_a_code_block():
+    call = '<invoke name="python_interpreter">\n<parameter name="code">print(1)\n</parameter>\n</invoke>'
+    assert agents.as_code_block("Thought: run it.\n" + call) == "Thought: run it.\n<code>print(1)\n</code>"
+    cut = '<invoke name="python_interpreter"><parameter name="code">x = 1'  # stopped at a stop sequence
+    assert agents.as_code_block(cut) == "<code>x = 1</code>"
+    answer = '<invoke name="final_answer">\n<parameter name="answer">Job 7 "done".\n</parameter>\n</invoke>'
+    assert agents.as_code_block(answer) == "<code>final_answer('Job 7 \"done\".')</code>"
+    ordinary = "Thought: done.\n<code>final_answer(1)"
+    assert agents.as_code_block(ordinary) == ordinary

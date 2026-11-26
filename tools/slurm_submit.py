@@ -65,7 +65,7 @@ def _submit(session: Session, script_path: str) -> dict:
         return {"status": "failed", "reason": "sbatch was not found on this machine; submit from a Slurm login node"}
     except subprocess.TimeoutExpired:
         return {"status": "unknown", "reason": f"sbatch did not answer in {SBATCH_TIMEOUT} s, so there is no job id; "
-                "a job may exist all the same - ask the person to check their queue (squeue --me) before any new "
+                "a job may exist all the same - ask the person to check their queue (squeue -u $USER) before any new "
                 "submission"}
     if result.returncode != 0:
         reason = (result.stderr or result.stdout).strip() or f"sbatch exited with code {result.returncode}"

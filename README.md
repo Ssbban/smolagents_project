@@ -7,10 +7,13 @@ through typed tools. The submit tool itself shows the job to the person and runs
 types `y` (or `yes`). It is built on Hugging Face [smolagents](https://github.com/huggingface/smolagents) 1.26.0, with agents
 that act by writing Python code.
 
-Status. No live language model has been run against this version: every agent-level test drives the real agents
-with a scripted model. Nothing has run on a real Slurm cluster: `sbatch`, `squeue`, `sacct` and `sinfo` are fakes
-in the tests. Generated job scripts are syntax-checked with `bash -n` by three tests and were read; no job script
-was executed.
+Status. On 2026-11-26 it ran on a real Slurm cluster (Slurm 19.05, CentOS 7) with a live model (`claude-sonnet-5-5`
+through Anthropic's OpenAI-compatible endpoint): two requests in one session, a MACE training job and then an i-PI
+simulation with the model just trained, each submitted after the person's `y`, both completed; after the changes
+that run led to, one request for both in a new session also completed, and the agent checked the result. The tools were also
+driven without a model: MACE training on CPU and GPU, i-PI runs on CPU, two at once on one node. What that day found
+and what changed is in [First run on a real cluster](#first-run-on-a-real-cluster-2026-11-26). The agent-level tests
+still drive the real agents with a scripted model, and Slurm is a fake in the tests.
 
 ## Architecture
 
@@ -30,9 +33,9 @@ flowchart LR
 | Part | What it is | Where |
 |---|---|---|
 | `manager_agent` | CodeAgent with no tools; delegates; the person reviews its plan | `agents.py` `build_agents` |
-| `mace_agent` | CodeAgent: MACE option look-up, job script, pre-flight, submit, job status | `agents.py`, `tools/mace_*.py` |
-| `ipi_agent` | CodeAgent: i-PI templates, tag help, input, ASE client, job script, submit | `agents.py`, `tools/ipi_*.py` |
-| Shared tools | `slurm_config`, `preflight`, `slurm_submit`, `job_status`, `show_content`, `user_input`, `web_search` | `tools/` |
+| `mace_agent` | CodeAgent: MACE option look-up, job script, pre-flight, submit, job status and output | `agents.py`, `tools/mace_*.py` |
+| `ipi_agent` | CodeAgent: starting structure, i-PI templates, tag help, input, ASE client, job script, submit | `agents.py`, `tools/structure_writer.py`, `tools/ipi_*.py` |
+| Shared tools | `slurm_config`, `preflight`, `slurm_submit`, `job_status`, `job_output`, `show_content`, `user_input`, `web_search` | `tools/` |
 | Session ledger | Files the tools wrote (path, sha256, bundle), jobs submitted, the cluster probe | `tools/session.py` |
 | Trace | One JSON line per event of a session | `tools/trace.py` |
 | REPL | One request = one run of the manager | `main.py` |
@@ -50,8 +53,12 @@ flowchart LR
 | | Every input problem in one error; names and paths in a restricted alphabet (`tools/specs.py`) | |
 | | MACE options checked against the option table of the job's MACE when it is visible, else a local MACE or release 0.3.17; the script records which (`tools/mace_cli_schema.py`, `tools/mace_script.py`) | |
 | | i-PI input loaded by i-PI itself; only listed paths editable; values without units reported (`tools/ipi_check.py`, `tools/ipi_InputFile_generator.py`) | |
-| | Socket, structure file and client count agree across input, client and job script (`tools/ipi_runase_generator.py`, `tools/ipi_submit_generator.py`) | |
+| | Socket, structure file and client count agree across input, client and job script (`tools/ipi_runase_generator.py`, `tools/ipi_submit_generator.py`); on the cluster a structure path must exist (`tools/ipi_InputFile_generator.py`) | |
+| | A structure the agent works out reaches the disk only through `write_structure`: known elements, one position per atom, a right-handed cell, no atoms closer than 0.5 Å (`tools/structure_writer.py`) | |
 | | Generated files are never overwritten and have LF line endings (`tools/session.py`) | |
+| | Job scripts run with `--export=NONE`: nothing comes from the shell the agent was started in; the i-PI job's conda environment has `i-pi` and MACE when it is visible (`tools/specs.py`, `tools/ipi_submit_generator.py`) | |
+| | Label keys given for training are in the first frame of the training file (`tools/mace_script.py`) | |
+| | `job_output` reads only the bundle of a job submitted in this session (`tools/job_output.py`) | |
 | | `sbatch` without an answer in 60 s gives status `unknown`, never an invented job id (`tools/slurm_submit.py`) | |
 
 ## What changed since v1
@@ -95,13 +102,18 @@ cp .env.example .env                             # then set SMOLAGENTS_MODEL_ID 
 .venv/bin/python main.py                         # run from the repository root
 ```
 
+On a cluster, `requirements.txt` pins `faiss-cpu` 1.9.0.post1, the newest wheel for glibc 2.17 (CentOS 7). The
+retriever needs only CPU torch: `pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu` before
+the requirements leaves out about 2.5 GB of CUDA libraries.
+
 Settings (`config.py`, environment first, then `.env`): `SMOLAGENTS_MODEL_ID` and `SMOLAGENTS_API_KEY` are
 required; `SMOLAGENTS_API_BASE` (any OpenAI-compatible endpoint, default `https://api.deepseek.com/v1`),
 `SMOLAGENTS_TEMPERATURE`, `SMOLAGENTS_MAX_STEPS` (20), `SMOLAGENTS_PLANNING_INTERVAL` (10) and
-`SMOLAGENTS_RUNS_DIR` (`runs`) are optional. Requests, tool results and cluster facts go to that endpoint.
+`SMOLAGENTS_RUNS_DIR` (`runs`) are optional. Requests, tool results and cluster facts go to that endpoint. A
+variable exported in the shell (for example in `~/.bashrc`) wins over `.env`; the CLI names each one that does.
 
-The tools are written for a Slurm login node, where they call `sbatch`, `squeue`, `sacct` and `sinfo`; this has
-not been tried on a real cluster. Without Slurm, every file is still generated and checked; `slurm_config`
+The tools are written for a Slurm login node, where they call `sbatch`, `squeue`, `sacct` and `sinfo`; they ran on
+one (see below). Without Slurm, every file is still generated and checked; `slurm_config`
 answers `available: False` with a reason, pre-flight warns that partition and time limit were not checked, and
 after the person's `y` `slurm_submit` returns `failed: sbatch was not found`. The MACE option table comes from the
 MACE in the job's conda environment if visible, else from a MACE importable locally, else from the release tag
@@ -146,27 +158,64 @@ python -m pytest                        # pyproject.toml already adds -q; a seco
 python -m ruff check .
 ```
 
-Last run (Windows 11, Python 3.11.3): 363 passed, 1 skipped, 1 expected failure, in about 21 s; ruff: all checks
-passed. The skipped test builds a real retrieval index and needs the packages of `requirements.txt` and the
-downloaded model and corpus. The three `bash -n` tests use `bash` on POSIX and the bash shipped with Git on
-Windows, and skip when neither exists.
+Last run (the cluster's login node, CentOS 7, Python 3.11.13, all of `requirements.txt` installed): 398 passed,
+1 expected failure, in about 70 s; ruff: all checks passed. The test that builds a real retrieval index needs the
+packages of `requirements.txt` and the downloaded model and corpus, and is skipped without them (it was skipped on
+Windows, 363 passed then). The `bash -n` tests use `bash` on POSIX and the bash shipped with Git on Windows, and
+skip when neither exists.
 
 | Kind | Tests | What they cover |
 |---|---|---|
-| Deterministic tools | 260, in 15 files | Specs, session ledger, pre-flight, submit and status with a fake `subprocess.run`, the MACE option table on two trimmed MACE versions, i-PI checks with the real i-PI 3.3.1 loader, `bash -n` on generated job scripts, retriever parts, settings, prompts naming only registered tools |
-| Scripted-model scenarios | 31, `tests/test_agents.py` | `tests/fakemodel.py` drives the agents `build_agents` builds; the person is scripted through `input()`; `sbatch` is a fake. The v1 scenarios (cancel, submit without review, shell access, sub-agent failures, Ctrl+C) and the delegation dict |
+| Deterministic tools | 293, in 16 files | Specs, session ledger, structure writer, pre-flight, submit and status with a fake `subprocess.run`, the MACE option table on two trimmed MACE versions, i-PI checks with the real i-PI 3.3.1 loader, `bash -n` on generated job scripts, retriever parts, settings, prompts naming only registered tools |
+| Scripted-model scenarios | 32, `tests/test_agents.py` | `tests/fakemodel.py` drives the agents `build_agents` builds; the person is scripted through `input()`; `sbatch` is a fake. The v1 scenarios (cancel, submit without review, shell access, sub-agent failures, Ctrl+C) and the delegation dict |
 | Gate probes | 74, `tests/test_gate_probes.py` | Generated code run in each built agent's interpreter, trying to get a shell, a file, a module, the approver, or `sbatch` on a file no tool wrote; 73 are blocked, 1 is the known gap kept as an expected failure |
+
+## First run on a real cluster (2026-11-26)
+
+One cluster: a Slurm 19.05.2 login node on CentOS 7 (glibc 2.17), a CPU partition and a partition of A100 MIG
+slices, MACE 0.3.10 to 0.3.13 in three conda environments, i-PI 3.1.5 in one of them.
+
+| What ran | Outcome |
+|---|---|
+| Without a model: cluster probe, `MACE_script`, `preflight`, `slurm_submit` (answered `y` at a terminal), `job_status` | MACE training jobs completed on CPU (one node pinned) and on a GPU; `job_status` read `sacct` |
+| Without a model: two i-PI runs (`03-NVT-SVR`, 192-atom water box, MACE-MP client on CPU) on one node at once | Both completed, each on its own socket |
+| Live model, request 1: "train a quick test MACE model on my bulk ice data ... on CPU on the compute-0-0 node" | Plan approved, script generated on the first `MACE_script` call, submitted after `y`, job completed, followed with `job_status` |
+| Live model, request 2: "run a short i-PI NVT simulation ... using the model we just trained ... on a GPU" | Two delegations (the MACE agent located the model, the i-PI agent built the run), submitted after `y`, 200 steps completed |
+| Both live submissions: the person answered the submit question about 50 s after it was asked, inside a sub-agent's code action | The turn went on; no time-out (v1 failed at 30 s) |
+| Live model, after the changes below, one request: "train a small MACE model ... then use that model to run a 100-step i-PI NVT simulation ... tell me whether the simulation ran all its steps and what temperature it ended at" | The MACE agent asked which of the three MACE environments to use (answered after about 400 s, no time-out); `ipi_submit_generator` refused an environment without `i-pi` and the agent took the one with it; the person declined a client whose model path was wrong, with the right path as feedback, and the agent regenerated it; both jobs completed; read with `job_output`, the agent reported step 100 of 100 and 370.97 K, as in `simulation.out` |
+| Live model, a person who has no structure file: "give me an input file for ipi that using any random mace model to run a nve simulation, submit on any lightgpu" | Before `write_structure`: both agents built 64-atom silicon in memory and could not save it, and the i-PI agent's probes of guessed paths were all accepted, a made-up one too; no job. After: the agent wrote `si64.xyz` itself, chose MACE-MP-0 small (downloaded by the job) and the one environment with i-PI, and the job completed on the GPU partition (5000 steps NVE); read with `job_output`, its report of the conserved energy (-341.4815 eV throughout) matches `simulation.out` |
+
+What the run showed, and what changed:
+
+| Seen | Cause | Now |
+|---|---|---|
+| `faiss-cpu==1.16.0` does not install | No wheel for glibc 2.17 | Pinned to 1.9.0.post1, the newest that has one |
+| First model call: 401 | An old `SMOLAGENTS_API_KEY` in `~/.bashrc` beat the key in `.env`, next to the API base from `.env` | The CLI names every setting the environment overrides (`config.shadowed_settings`) |
+| The agent could not tell which partition a node belongs to | `sinfo -N` prints a node once per partition and the probe had no partition column (38 rows, 16 nodes) | One row per node with its partitions; modules from `module -t avail` |
+| `mace_cli_schema` showed the MACE 0.3.17 options, labelled "environment not visible" | Three visible environments have MACE, so none was chosen and the release table was used | It asks for `conda_env` and lists the environments with their MACE versions |
+| The MACE agent could not check the label keys of the training file | No tool reads it; MACE trains on with weight zero when a key is missing | `MACE_script` lists the first frame's keys in its notes and refuses a given key that is not there |
+| The i-PI job ran in an environment without `i-pi` | `sbatch` exported the submitting shell's `PATH`, which had another environment's `i-pi` | `--export=NONE` in every job script; `ipi_submit_generator` checks the environment for `i-pi` and MACE |
+| Both agents ended with "please check the output files yourself" | No tool read `log.i-pi`, `simulation.out` or MACE's log; `show_content` returned a path it did not know as if it were the text | `job_output` reads the files in the bundle of a job of this session; `show_content` refuses other paths |
+| A wasted step on `modifications` given as a list; a model path relative to the repository; after the change, one made absolute from the home directory (the person caught it) | The job runs in its bundle directory; the paths the tools return are relative to the repository | Lists accepted; a model file must be an absolute path whose directory exists, and the message names the directory the tools' paths are relative to |
+| 4 of 35 actions rejected: written as `<invoke name="python_interpreter">` or `<invoke name="final_answer">` | Claude's own tool-call markup instead of a `<code>` block | `agents.CodeActionModel` turns both into the `<code>` block; all 4 then parse |
+| Each plan printed twice | smolagents logs plans at INFO, and the plan review printed it again | Printed by the review only below INFO |
+| CPU jobs got one core | `--ntasks=1` and no CPU count | `cpus_per_task` in both generators |
+| A person without a structure file got no job; `/nonexistent/definitely/fake.xyz` was accepted as a structure | Generated code cannot write files and no tool wrote a structure; an absolute structure path was never checked | `write_structure`; on the cluster a structure path must exist |
+| `log.i-pi` read during a run was empty | Python buffers output redirected to a file until it exits | `PYTHONUNBUFFERED=1` in the i-PI job script: the log showed MD step 80 of a running job |
+
+Not changed: one MIG slice of the GPU node (`SLURM_JOB_GPUS=12`) failed CUDA initialisation with "out of memory" in
+two short test jobs while `nvidia-smi` showed it idle; jobs on the other slices ran. That is for the cluster's
+administrators.
 
 ## Not done / limits
 
-- No live model run of this version. Whether a real model follows the prompts, recovers from tool errors or
-  finishes a task is not measured. There are no success rates or costs.
-- No real cluster run. Slurm commands are fakes in the tests; `sinfo`, `squeue` and `sacct` parsing is tested on
-  canned text only. MACE and ASE never ran, and no i-PI simulation ran; only i-PI's input loader runs in the tests.
-- Generated job scripts are only syntax-checked: `bash -n` in three tests (a MACE script for GPU and for CPU, an
-  i-PI script with one client, one with four GPU clients); other templates are not covered. None was executed.
-- The 30 s executor time-out of v1 is gone, but the 35 s wait that showed the defect was not re-run; the test only
-  checks the setting.
+- Two live-model sessions: three requests, one model. Whether a model follows the prompts and finishes a task in
+  general is not measured. There are no success rates or costs. In the last session 4 of 32 actions still failed
+  and were retried by the agent: the intended "which conda environment?" error, an environment without `i-pi`
+  refused by the tool, a final answer written as plain text and a stray "Thought:" line read as code.
+- One cluster only. The tests still use fake Slurm commands; `sinfo`, `squeue` and `sacct` parsing was also checked
+  on that cluster's output. Generated scripts ran there for MACE (CPU and GPU) and for i-PI with templates
+  `03-NVT-SVR` and `00-NVE` (CPU and GPU clients); the other eight templates are only syntax-checked and loaded by i-PI.
 - smolagents' local Python interpreter is not a sandbox. Code written by the manager can reach a sub-agent object:
   it can widen the sub-agent's import list (kept as the expected failure
   `tests/test_gate_probes.py::test_the_manager_cannot_widen_a_sub_agents_imports`), read the model's API key
@@ -177,8 +226,9 @@ Windows, and skip when neither exists.
   passage holds every expected keyword for 6 of 8 (v1: 7 of 8). No labelled relevance set exists.
 - The retriever's corpus is a dataset on a personal Hugging Face account (`DATASET` in `tools/RetrieverTool.py`),
   pinned to a revision.
-- Timings come from one Windows 11 machine. Everything ran on Windows with Python 3.11 only; the CI workflow
-  (Ubuntu) is configured but no run of it is recorded.
+- Timings in "What changed since v1" come from one Windows 11 machine. The test suite ran on Windows and on the
+  cluster's Linux login node, with Python 3.11 only; the CI workflow (Ubuntu) is configured but no run of it is
+  recorded.
 - Open v1 defects (string epochs refused, template comments dropped, two parameter names that differ between the
   Slurm generators) are listed in [docs/V1_DEFECTS.md](docs/V1_DEFECTS.md).
 - No licence file yet.

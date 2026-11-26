@@ -212,8 +212,9 @@ def _in_site_packages(env_dir: Path) -> Optional[Tuple[Path, str]]:
     return None
 
 
-def mace_in_conda_env(conda_activation_path: Optional[str], conda_env: Optional[str]) -> Optional[Tuple[Path, str]]:
-    """MACE of a conda environment, located from conda.sh (<base>/etc/profile.d/conda.sh) and the name."""
+def conda_env_dir(conda_activation_path: Optional[str], conda_env: Optional[str]) -> Optional[Path]:
+    """Directory of a conda environment, located from conda.sh (<base>/etc/profile.d/conda.sh) and the name;
+    None when it is not visible from this machine."""
     if not conda_activation_path or not conda_env:
         return None
     parents = Path(os.path.expanduser(conda_activation_path)).parents
@@ -221,11 +222,20 @@ def mace_in_conda_env(conda_activation_path: Optional[str], conda_env: Optional[
         return None
     base = parents[2]
     candidates = [base] if conda_env == "base" else [base / "envs" / conda_env, Path.home() / ".conda/envs" / conda_env]
-    for env_dir in candidates:
-        found = _in_site_packages(env_dir) if env_dir.is_dir() else None
-        if found:
-            return found
-    return None
+    return next((env_dir for env_dir in candidates if env_dir.is_dir()), None)
+
+
+def mace_in_conda_env(conda_activation_path: Optional[str], conda_env: Optional[str]) -> Optional[Tuple[Path, str]]:
+    """(arg_parser.py, version) of the MACE installed in a conda environment, or None."""
+    env_dir = conda_env_dir(conda_activation_path, conda_env)
+    return _in_site_packages(env_dir) if env_dir else None
+
+
+def mace_envs(conda_activation_path: Optional[str]) -> Dict[str, str]:
+    """{environment: MACE version} of the conda environments of the cluster probe that have MACE installed."""
+    envs = (get_session().cluster or {}).get("available_conda_envs") or []
+    found = {env: mace_in_conda_env(conda_activation_path, env) for env in envs}
+    return {env: hit[1] for env, hit in found.items() if hit}
 
 
 def _importable_here() -> Optional[Tuple[Path, str]]:
@@ -289,12 +299,16 @@ def job_environment(
         conda_activation_path = session.cluster["conda_activation_path"]
         notes.append(f"conda_activation_path {conda_activation_path} was taken from the cluster probe")
     if not conda_env and conda_activation_path:
-        envs = session.cluster.get("available_conda_envs") or []
-        with_mace = [env for env in envs if mace_in_conda_env(conda_activation_path, env)]
+        with_mace = list(mace_envs(conda_activation_path))
         if len(with_mace) == 1:
             conda_env = with_mace[0]
             notes.append(f"conda_env {conda_env} was taken from the cluster probe: the only environment with MACE")
     return conda_activation_path, conda_env, notes
+
+
+def describe_mace_envs(conda_activation_path: Optional[str]) -> str:
+    """'env (version), ...' of the environments with MACE, for messages."""
+    return ", ".join(f"{env} ({version})" for env, version in mace_envs(conda_activation_path).items())
 
 
 @tool
@@ -311,9 +325,14 @@ def mace_cli_schema(
     Args:
         names: Option names to describe, e.g. ["r_max", "swa"].
         search: Text to find in option names and help texts, e.g. "stress".
-        conda_env: The conda environment the job will use, if already known (its MACE version is then used).
+        conda_env: The conda environment the job will use; its MACE version is then described. Needed when several
+            environments have MACE (the tool says which).
     """
     conda_activation_path, conda_env, _ = job_environment(None, conda_env)
+    if not conda_env and len(mace_envs(conda_activation_path)) > 1:
+        raise ValueError(f"several conda environments have MACE, with different options: "
+                         f"{describe_mace_envs(conda_activation_path)}. Call again with conda_env set to the one the "
+                         "job will use (ask the person if they did not say).")
     table = load_mace_cli_schema(conda_activation_path, conda_env)
     result: Dict[str, Any] = {"mace_version": table.version, "source": table.origin}
     if names:

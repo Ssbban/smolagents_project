@@ -60,6 +60,15 @@ to a list returned by `mace_cli_schema` changed what `MACE_script` accepted unti
 Rejected: the v1 protocol (the model asks "type yes" with `user_input` and reads the answer itself, so the model
 decides); an approval token the model passes back; approval state on the tool instance; an approval tool the
 model calls before submitting.
+What runs is what was shown: every job script has `#SBATCH --export=NONE`, so the job's environment is the one
+its script sets up, not the shell the agent was started from. On the first cluster a job ran an `i-pi` that its
+conda environment lacked, found through the exported `PATH`; `ipi_submit_generator` now also checks the
+environment for `i-pi` and MACE when it can see it.
+Writing what the model works out: a structure for a person who has none is computed in the generated code and written by `write_structure` (`tools/structure_writer.py`), which checks the atoms (elements, one position each, a right-handed cell, no pair closer than 0.5 Å with periodic images) and writes extended XYZ into a new bundle; the no-file rule for generated code stays. On the cluster an absolute structure path that does not exist is refused: the login node sees the shared file systems.
+Reading back: `job_output(job_id, name)` reads the files a job of this session wrote into its bundle (training
+log, `log.i-pi`, `simulation.out`). The path is resolved, links included, and must stay inside that bundle; the
+agents still cannot open other files. Without it both agents of the first live run ended with "check the output
+files yourself".
 
 ### Cancel that cancels
 
@@ -192,11 +201,11 @@ Only what informed a decision here. None of the four asks a person before a side
 
 | Limit | What would lift it |
 |---|---|
-| No live-model run of this version | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
-| No real cluster run | Small MACE and i-PI jobs submitted from a login node, then `job_status` and the logs |
+| Two live-model sessions (three requests, one model; README "First run on a real cluster") | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
+| One cluster (Slurm 19.05, CentOS 7); i-PI jobs ran only with templates `03-NVT-SVR` and `00-NVE` | The other templates and another site's Slurm |
 | Manager code can reach a sub-agent object: import list (expected-failure test), API key and tools (one-off probe, no test) | A handle in `managed_agents`, giving up `visualize()` and `save()`; or sub-agents in another process |
 | The local interpreter is not a sandbox | Operating-system isolation around the whole process |
-| Executor time-out: only the setting is tested, the 35 s wait was not re-run | A scripted-model test whose person answers after more than 30 s |
+| Executor time-out: tested by the setting only; in the live runs the person answered after about 50 s and once after about 400 s, without a time-out | A scripted-model test whose person answers after more than 30 s |
 | The 512-token chunk test is skipped without the retrieval packages | A CI job with those packages and the cached model |
 | Retriever checked by a keyword heuristic on eight queries | A labelled query set with expected pages |
 | Timings from one Windows machine | The same measurements on the login node |

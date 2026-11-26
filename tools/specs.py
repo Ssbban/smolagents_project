@@ -25,7 +25,8 @@ MAIL_TYPES = {
 }  # fmt: skip
 # Options the generators write themselves; additional Slurm arguments must not repeat them.
 DEDICATED_SLURM_OPTIONS = {
-    "job-name", "time", "partition", "nodes", "ntasks", "mem", "mail-user", "mail-type", "gres", "chdir",
+    "job-name", "time", "partition", "nodes", "ntasks", "cpus-per-task", "mem", "mail-user", "mail-type", "gres",
+    "chdir", "export",
 }  # fmt: skip
 
 
@@ -220,6 +221,7 @@ class ClusterSpec:
     mail_user: Optional[str] = None
     mail_type: Optional[str] = None
     additional_slurm_args: Mapping[str, Any] = field(default_factory=dict)
+    cpus_per_task: Optional[int] = None  # None: Slurm's default, one core per task
 
     def problems(self, *, require_conda: bool = True) -> List[str]:
         p: List[str] = []
@@ -228,6 +230,8 @@ class ClusterSpec:
         check(p, _require_safe_name, "partition", self.partition)
         check(p, _positive_int, "nodes", self.nodes)
         check(p, _positive_int, "ntasks", self.ntasks)
+        if self.cpus_per_task is not None:
+            check(p, _positive_int, "cpus_per_task", self.cpus_per_task)
         check(p, _positive_int, "gpus_per_node", self.gpus_per_node, allow_zero=True)
         check(p, _memory, self.memory)
         check(p, _mail_user, self.mail_user)
@@ -243,7 +247,11 @@ class ClusterSpec:
         return self
 
     def sbatch_header(self, gpus: int) -> List[str]:
-        """Shebang and #SBATCH lines of a job script; a GPU line only when `gpus` > 0."""
+        """Shebang and #SBATCH lines of a job script; a GPU line only when `gpus` > 0.
+
+        --export=NONE: the job runs the environment its script sets up, not the shell the agent was started from
+        (a PATH inherited that way once supplied an i-pi the job's conda environment does not have).
+        """
         lines = [
             "#!/bin/bash -l",
             f"#SBATCH --job-name={self.job_name}",
@@ -251,7 +259,9 @@ class ClusterSpec:
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.ntasks}",
+            *([f"#SBATCH --cpus-per-task={self.cpus_per_task}"] if self.cpus_per_task else []),
             f"#SBATCH --mem={self.memory}",
+            "#SBATCH --export=NONE",
         ]
         if self.mail_user:
             lines.append(f"#SBATCH --mail-user={self.mail_user}")

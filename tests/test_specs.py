@@ -52,7 +52,7 @@ def test_one_error_lists_every_problem():
 def test_valid_header_values_pass():
     assert problems_of(memory="500M", mail_user="ada.lovelace@uni.ac.uk", mail_type="BEGIN,END,FAIL",
                        additional_slurm_args={"account": "proj-12", "qos": "normal", "output": "slurm-%j.out",
-                                              "cpus-per-task": 8, "constraint": ""}) == []
+                                              "constraint": ""}) == []
 
 
 @pytest.mark.parametrize(
@@ -68,6 +68,9 @@ def test_valid_header_values_pass():
         ({"additional_slurm_args": {"time": "1:00:00"}}, "dedicated argument"),
         ({"additional_slurm_args": {"chdir": "/tmp"}}, "dedicated argument"),
         ({"additional_slurm_args": {"cpus_per_task": 4}}, "'-' instead of '_'"),
+        ({"additional_slurm_args": {"cpus-per-task": 8}}, "dedicated argument"),
+        ({"additional_slurm_args": {"export": "ALL"}}, "dedicated argument"),
+        ({"cpus_per_task": 0}, "cpus_per_task must be greater than zero"),
         ({"additional_slurm_args": {"A": "proj"}}, "long option name"),
         ({"memory": "32G\nrm -rf ~"}, "control characters"),  # baseline M16
     ],
@@ -75,6 +78,12 @@ def test_valid_header_values_pass():
 def test_rejected_header_values(changes, fragment):
     found = problems_of(**changes)
     assert any(fragment in p for p in found), found
+
+
+def test_header_requests_cpus_and_exports_nothing():
+    header = ClusterSpec(**CLUSTER, cpus_per_task=8).sbatch_header(gpus=0)
+    assert "#SBATCH --cpus-per-task=8" in header and "#SBATCH --export=NONE" in header
+    assert not any("cpus-per-task" in line for line in ClusterSpec(**CLUSTER).sbatch_header(gpus=0))
 
 
 def test_ipi_submit_spec_collects_cluster_and_own_problems():

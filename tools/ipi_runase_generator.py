@@ -19,6 +19,24 @@ CALCULATOR_FACTORIES = {
 }
 
 
+def model_path_problems(calculator_kwargs: Any, on_cluster: bool) -> list[str]:
+    """A model file must be an absolute path: the client runs in the job's bundle directory, not here. On the cluster
+    its directory must exist; the file itself may still be on its way from a training job.
+    A model name such as "medium" and an https URL (MACE downloads it) are not files."""
+    model = calculator_kwargs.get("model") if isinstance(calculator_kwargs, dict) else None  # else the spec reports
+    if not isinstance(model, str) or model.startswith("https:") or not ("/" in model or model.endswith(".model")):
+        return []
+    # Seen live: a path the tools returned (relative to this directory) made absolute from the home directory.
+    relative_to = f"; the paths the tools return are relative to {Path.cwd()}"
+    if not model.startswith("/"):
+        hint = f"; from here that is {Path(model).resolve()}" if Path(model).is_file() else relative_to
+        return [f"calculator_kwargs model {model!r} must be an absolute path: the client runs in the job's "
+                f"directory{hint}"]
+    if on_cluster and not Path(model).parent.is_dir():
+        return [f"calculator_kwargs model {model}: the directory {Path(model).parent} does not exist{relative_to}"]
+    return []
+
+
 def render_ase_client(spec: IPIASEClientSpec) -> str:
     spec.validate(supported_calculators=CALCULATOR_IMPORTS)
     calc_name_lower = spec.calculator.lower()
@@ -74,7 +92,7 @@ def ipi_runase_generator(
         calculator: ASE calculator name: mace_mp or mace_off.
         device: Where the calculator runs: "cpu" or "cuda".
         use_stress: Whether the client returns the stress; needed by every constant-pressure (NPT) template.
-        calculator_kwargs: Other keyword arguments of the calculator factory, e.g. {"model": "medium"} (plain values only).
+        calculator_kwargs: Other keyword arguments of the calculator factory, e.g. {"model": "medium"} (plain values only). A model file of your own, such as one a MACE job trained, goes in "model" as an absolute path.
     """
     session = get_session()
     problems: list[str] = []
@@ -88,6 +106,7 @@ def ipi_runase_generator(
         calculator_kwargs=calculator_kwargs or {},
         device=device,
     )
+    problems += model_path_problems(calculator_kwargs, bool(session.cluster and session.cluster.get("available")))
     raise_problems("ipi_runase_generator", problems + spec.problems(supported_calculators=CALCULATOR_IMPORTS))
 
     script_content = render_ase_client(spec)

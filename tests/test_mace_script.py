@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from conftest import MACE_PARAMS
+from conftest import MACE_ARG_PARSER, MACE_PARAMS
 
 import tools.mace_cli_schema as schema_module
 from tools.mace_cli_schema import parse_mace_arg_parser
@@ -238,3 +238,26 @@ def test_preflight_missing_input_file_is_an_error_on_the_cluster(session, mace17
         "--train_file: $HOME/data/train.xyz does not exist", "--valid_file: /no/such/valid.xyz does not exist"]
     (home / "data" / "train.xyz").write_text("")
     assert preflight(script_path=script)["errors"] == ["--valid_file: /no/such/valid.xyz does not exist"]
+
+
+def test_label_keys_must_be_in_the_first_frame_of_the_training_file(session, monkeypatch, tmp_path):
+    keys_parser = MACE_ARG_PARSER + (
+        '    parser.add_argument("--energy_key", type=str, default=DefaultKeys.ENERGY.value)\n'
+        '    parser.add_argument("--forces_key", type=str, default=DefaultKeys.FORCES.value)\n'
+        '    parser.add_argument("--stress_key", type=str, default=DefaultKeys.STRESS.value)\n')
+    monkeypatch.setattr("tools.mace_script.load_mace_cli_schema",
+                        lambda *a, **k: parse_mace_arg_parser(keys_parser, source_url="test"))
+    train = tmp_path / "train.xyz"
+    train.write_text('1\nLattice="5 0 0 0 5 0 0 0 5" Properties=species:S:1:pos:R:3:REF_forces:R:3 '
+                     'REF_free_energy=-1.5 REF_stress="1 0 0 0 1 0 0 0 1" pbc="T T T"\nO 0 0 0 0.1 0.2 0.3\n')
+    keys = {"energy_key": "REF_energy", "forces_key": "REF_forces"}
+    with pytest.raises(ValueError, match=r"energy_key 'REF_energy' is not in the first frame .*'REF_free_energy'"):
+        run(train_file=str(train), additional_args=keys)
+    with pytest.raises(ValueError, match=r"stress_key 'stress' is not in the first frame"):
+        run(train_file=str(train), additional_args={"energy_key": "REF_free_energy", "--stress-key": "stress"})
+    # Not set: MACE reads its default REF_energy, which this file does not have (seen with the cluster's ice data).
+    with pytest.raises(ValueError, match=r"energy_key is not set, and MACE's default 'REF_energy' is not in"):
+        run(train_file=str(train), additional_args={})
+    result = run(train_file=str(train), additional_args={"energy_key": "REF_free_energy"})
+    assert result["notes"][-1].endswith("label keys in the first frame of "
+                                        f"{train}: ['REF_forces', 'REF_free_energy', 'REF_stress']")
