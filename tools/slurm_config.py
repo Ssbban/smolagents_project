@@ -38,11 +38,12 @@ def _find_conda_path() -> Optional[str]:
 
 
 def _get_conda_envs() -> List[str]:
-    """Gets a list of available conda environments."""
+    """Names of the conda environments. An environment created by path (conda create -p) has no name: its line
+    starts with spaces and is skipped."""
     stdout, _ = run_command(["conda", "info", "--envs"])
     envs = []
     for line in (stdout or "").splitlines():
-        if line.startswith("#") or not line.strip():
+        if not line.strip() or line.startswith(("#", " ", "\t")):
             continue
         envs.append(line.split()[0])
     return envs

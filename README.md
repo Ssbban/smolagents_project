@@ -23,6 +23,8 @@ Built on Hugging Face [smolagents](https://github.com/huggingface/smolagents).
 - A conda environment for the jobs: `mace-torch` for training; `i-pi`, `ase` and `mace-torch` for molecular dynamics.
 - Python 3.11 for the agent itself.
 - An API key for an OpenAI-compatible model endpoint. Tested with Anthropic's (`claude-sonnet-5-5`).
+- Internet access from the machine running the agent: the model endpoint, web search, GitHub reads, and a one-time
+  download of the i-PI manual and its embedding model from Hugging Face (kept in `.cache/`).
 
 ## Installation
 
@@ -36,9 +38,9 @@ python3.11 -m venv .venv            # a fresh environment, only for the agent
 cp .env.example .env                # then set SMOLAGENTS_API_KEY
 ```
 
-Install the versions pinned in `requirements.txt`, in their own environment. The agent is written for smolagents
-1.26.0; an older smolagents stops at start-up with
-`TypeError: LocalPythonExecutor.__init__() got an unexpected keyword argument 'timeout_seconds'`. On CentOS 7
+Install exactly the versions pinned in `requirements.txt`, in their own environment: the agent is written for
+smolagents 1.26.0 (smolagents 1.23 and older stop at start-up with
+`TypeError: LocalPythonExecutor.__init__() got an unexpected keyword argument 'timeout_seconds'`). On CentOS 7
 (glibc 2.17), the pinned `faiss-cpu` 1.9.0.post1 is the newest release that installs.
 
 ## Usage
@@ -70,7 +72,8 @@ Agent> Both jobs completed. The simulation ran all 100 steps and ended at 371 K 
   job submitted: 55961 from runs/20261126-200808-a637/01-mace_ice_small/job.sh
 ```
 
-- Each request starts with the agent's plan: `1` approves it, `2` lets you edit it, `3` cancels the request.
+- Each request starts with the agent's plan, and a long request is re-planned every
+  `SMOLAGENTS_PLANNING_INTERVAL` steps: `1` approves the plan, `2` lets you edit it, `3` cancels the request.
 - At the submit question, `y` submits, `n` does not, and anything else is taken as what to change.
 - Everything a session writes goes to `runs/<session>/`: one directory per job, and `trace.jsonl`, one line per step,
   tool call and submission.
@@ -88,7 +91,7 @@ Settings come from the environment, then from `.env`.
 | `SMOLAGENTS_API_BASE` | `https://api.anthropic.com/v1` | any OpenAI-compatible endpoint |
 | `SMOLAGENTS_TEMPERATURE` | provider default | |
 | `SMOLAGENTS_MAX_STEPS` | 20 | steps per agent and request |
-| `SMOLAGENTS_PLANNING_INTERVAL` | 10 | |
+| `SMOLAGENTS_PLANNING_INTERVAL` | 10 | the manager re-plans, and asks you again, every N steps |
 | `SMOLAGENTS_RUNS_DIR` | `runs` | |
 
 A variable exported in your shell (for example in `~/.bashrc`) wins over `.env`; the agent names each one that does
@@ -136,6 +139,8 @@ tools/
   job_status.py          job state and log tail
   job_output.py          reading a job's outputs
   retriever.py           search in the i-PI manual
+  github_fetch.py        read a file from GitHub (MACE's README)
+  show_content.py        show a generated file
 tests/                   pytest suite: tools, scripted-model scenarios, sandbox probes
 docs/                    design, the first run on a real cluster, the defects of v1
 ```

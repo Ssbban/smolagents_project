@@ -222,7 +222,7 @@ Only what informed a decision here. None of the four asks a person before a side
 
 | Limit | What would lift it |
 |---|---|
-| Two live-model sessions (three requests, one model; docs/CLUSTER_RUN.md) | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
+| Three live-model sessions (four requests, one model; docs/CLUSTER_RUN.md) | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
 | One cluster (Slurm 19.05, CentOS 7); i-PI jobs ran only with templates `03-NVT-SVR` and `00-NVE` | The other templates and another site's Slurm |
 | Manager code can reach a sub-agent object: import list (expected-failure test), API key and tools (one-off probe, no test) | A handle in `managed_agents`, giving up `visualize()` and `save()`; or sub-agents in another process |
 | The local interpreter is not a sandbox | Operating-system isolation around the whole process |

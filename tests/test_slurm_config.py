@@ -67,3 +67,14 @@ def test_modules_come_from_the_terse_listing(session, fake_run, monkeypatch):
     run = fake_run({"bash": (0, listing, "")})
     assert slurm_config()["available_modules"] == ["lmod", "GCC/11.2.0", "GCC/10.3.0"]
     assert any(argv[:2] == ["bash", "-lc"] and "module -t avail" in argv[2] for argv, _ in run.calls)
+
+
+def test_conda_environments_without_a_name_are_skipped(session, fake_run):
+    # conda 26 output: an environment made with `conda create -p` has no name, so its line starts with spaces.
+    listing = ("# conda environments:\n#\n# * -> active\n# + -> frozen\n"
+               "mace                     /opt/conda/envs/mace\n"
+               "base                     /opt/conda\n"
+               "                         /scratch/someone/prefix_env\n"
+               "                      *  /home/someone/active_prefix_env\n")
+    fake_run({"conda": (0, listing, "")})
+    assert slurm_config()["available_conda_envs"] == ["mace", "base"]

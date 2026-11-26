@@ -172,7 +172,7 @@ def _flag(call: ast.Call) -> Optional[MACEFlag]:
     )
 
 
-def parse_mace_arg_parser(source: str, *, source_url: str = "", version: str = "unknown") -> MACECliSchema:
+def parse_mace_arg_parser(source: str, *, source_url: str, version: str = "unknown") -> MACECliSchema:
     """The options added in `build_default_arg_parser` of an arg_parser.py text (`source_url` = its origin)."""
     try:
         tree = ast.parse(source)
