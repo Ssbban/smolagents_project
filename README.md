@@ -130,30 +130,50 @@ decide how it is done, and you decide whether a job runs. [docs/DESIGN.md](docs/
 ## Project structure
 
 ```text
-main.py                  terminal session: one request is one run of the manager
-agents.py                the manager and the two specialist agents
-config.py                settings (environment variables)
-requirements.txt         pinned dependencies
-prompts/                 guidance for each agent
-tools/
-  session.py, trace.py   what a session wrote and submitted; the JSON trace
-  plan_review.py         the plan review at the start of a request
-  slurm_config.py        cluster probe: partitions, nodes, conda environments
-  specs.py               validation of Slurm and job settings
-  mace_cli_schema.py     MACE options of the installed version
-  mace_script.py         MACE training job
-  structure_writer.py    starting structures
-  ipi_*.py               i-PI input (checked by i-PI), ASE client, job script, tag help
-  ipi_templates/         ten i-PI input templates, pinned to their source
-  preflight.py           checks before submission
-  approval.py            the y / n question
-  slurm_submit.py        submission
-  job_status.py          job state and log tail
-  job_output.py          reading a job's outputs
-  retriever.py           search in the i-PI manual
-  github_fetch.py        read a file from GitHub (MACE's README)
-  show_content.py        show a generated file
-docs/                    design, the first run on a real cluster, the defects of v1
+smolagents_project/
+├── main.py                        entry point: the terminal session
+├── agents.py                      the manager and the two specialist agents
+├── config.py                      settings, read from environment variables
+├── requirements.txt               pinned dependencies
+│
+├── prompts/                       guidance for each agent
+│   ├── manager_instruction.txt
+│   ├── mace_instruction.txt
+│   └── ipi_instruction.txt
+│
+├── tools/                         everything the agents can call
+│   │
+│   │   MACE training
+│   ├── mace_cli_schema.py         options of the installed MACE version
+│   ├── mace_script.py             writes the training job
+│   │
+│   │   i-PI molecular dynamics
+│   ├── ipi_templates/             ten input templates, pinned to their source
+│   ├── ipi_help.py                what an i-PI tag means, its values and units
+│   ├── ipi_InputFile_generator.py writes input.xml from a template
+│   ├── ipi_check.py               has i-PI itself load the input
+│   ├── ipi_runase_generator.py    writes the ASE client
+│   ├── ipi_submit_generator.py    writes the job script
+│   ├── structure_writer.py        builds a starting structure
+│   ├── retriever.py               searches the i-PI manual
+│   │
+│   │   Slurm
+│   ├── slurm_config.py            partitions, nodes, conda environments
+│   ├── specs.py                   validation of Slurm and job settings
+│   ├── preflight.py               checks before a submission
+│   ├── approval.py                the y / n question to you
+│   ├── slurm_submit.py            submits an approved job
+│   ├── job_status.py              job state and log tail
+│   ├── job_output.py              reads a job's output files
+│   │
+│   │   Session and helpers
+│   ├── session.py                 what this session wrote and submitted
+│   ├── trace.py                   the JSON trace of a session
+│   ├── plan_review.py             the plan review at the start of a request
+│   ├── show_content.py            shows a generated file
+│   └── github_fetch.py            reads a file from GitHub
+│
+└── docs/                          design notes, the first cluster run, v1 defects
 ```
 
 ## Status and limits
