@@ -174,13 +174,13 @@ smolagents_project/
     └── github_fetch.py            reads a file from GitHub
 ```
 
-## Status and limits
+## License
 
-- Run on one cluster with one model: four requests and five jobs, all completed, each submitted after the person's
-  `y`. Success rates over many requests have not been measured.
-- smolagents' Python sandbox is not a security boundary against a hostile model; the guarantees above hold for
-  mistakes, not attacks.
-- No licence file yet.
+The original source code of this project is licensed under the [Apache License 2.0](LICENSE).
+
+The i-PI input templates included in `tools/ipi_templates/` are derived from [MLIPs-with-iPI](https://github.com/venkatkapil24/MLIPs-with-iPI) and remain subject to their original MIT License.
+
+Third-party software, libraries, documentation, and pretrained model weights are subject to their respective licences.
 
 ## Credits
 
