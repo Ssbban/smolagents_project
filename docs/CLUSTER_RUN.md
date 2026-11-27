@@ -18,7 +18,7 @@ What the run showed, and what changed:
 | Seen | Cause | Now |
 |---|---|---|
 | `faiss-cpu==1.16.0` does not install | No wheel for glibc 2.17 | Pinned to 1.9.0.post1, the newest that has one |
-| First model call: 401 | An old `SMOLAGENTS_API_KEY` in `~/.bashrc` beat the key in `.env`, next to the API base from `.env` | The CLI names every setting the environment overrides (`config.shadowed_settings`) |
+| First model call: 401 | An old `SMOLAGENTS_API_KEY` in `~/.bashrc` beat the key in a separate settings file, next to the API base from that file | Settings now come from one place, the environment |
 | The agent could not tell which partition a node belongs to | `sinfo -N` prints a node once per partition and the probe had no partition column (38 rows, 16 nodes) | One row per node with its partitions; modules from `module -t avail` |
 | `mace_cli_schema` showed the MACE 0.3.17 options, labelled "environment not visible" | Three visible environments have MACE, so none was chosen and the release table was used | It asks for `conda_env` and lists the environments with their MACE versions |
 | The MACE agent could not check the label keys of the training file | No tool reads it; MACE trains on with weight zero when a key is missing | `MACE_script` lists the first frame's keys in its notes and refuses a given key that is not there |

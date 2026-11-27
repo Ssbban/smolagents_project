@@ -5,7 +5,7 @@ import contextlib
 import smolagents
 
 from agents import build_agents, build_model
-from config import Settings, SettingsError, shadowed_settings
+from config import Settings, SettingsError
 from tools.plan_review import UserCancelled
 from tools.session import Session, start_session
 
@@ -51,8 +51,6 @@ def main():
         settings = Settings.from_env()
     except SettingsError as error:
         raise SystemExit(f"Error: {error}") from None
-    for name in shadowed_settings():
-        print(f"Warning: {name} is set in the environment, which overrides the value in .env")
     session = start_session(settings.runs_dir)
     session.trace.emit("session_start", settings=settings.public(), smolagents=smolagents.__version__)
     manager = build_agents(build_model(settings), settings)

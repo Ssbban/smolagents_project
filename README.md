@@ -35,8 +35,19 @@ python3.11 -m venv .venv            # a fresh environment, only for the agent
 # optional: CPU-only torch, about 2.5 GB smaller (the agent needs torch only for searching the i-PI manual)
 .venv/bin/pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env                # then set SMOLAGENTS_API_KEY
 ```
+
+Then tell the agent which model to use and give it your API key, as environment variables in the shell you start
+it from:
+
+```bash
+export SMOLAGENTS_MODEL_ID=claude-sonnet-5-5
+export SMOLAGENTS_API_KEY=your_api_key
+export SMOLAGENTS_API_BASE=https://api.anthropic.com/v1    # optional: this is the default
+```
+
+To keep them across logins, put these lines in your `~/.bashrc`. The key is read from the environment only; do not
+write it into any file of this repository.
 
 Install exactly the versions pinned in `requirements.txt`, in their own environment: the agent is written for
 smolagents 1.26.0 (smolagents 1.23 and older stop at start-up with
@@ -82,20 +93,20 @@ Agent> Both jobs completed. The simulation ran all 100 steps and ended at 371 K 
 
 ## Configuration
 
-Settings come from the environment, then from `.env`.
+All settings are environment variables (`config.py` reads them at start-up).
 
 | Variable | Default | |
 |---|---|---|
 | `SMOLAGENTS_MODEL_ID` | (required) | a model your provider serves |
-| `SMOLAGENTS_API_KEY` | (required) | |
+| `SMOLAGENTS_API_KEY` | (required) | your API key for that provider |
 | `SMOLAGENTS_API_BASE` | `https://api.anthropic.com/v1` | any OpenAI-compatible endpoint |
 | `SMOLAGENTS_TEMPERATURE` | provider default | |
 | `SMOLAGENTS_MAX_STEPS` | 20 | steps per agent and request |
 | `SMOLAGENTS_PLANNING_INTERVAL` | 10 | the manager re-plans, and asks you again, every N steps |
 | `SMOLAGENTS_RUNS_DIR` | `runs` | |
 
-A variable exported in your shell (for example in `~/.bashrc`) wins over `.env`; the agent names each one that does
-when it starts. Requests, tool results and cluster facts are sent to the model endpoint.
+If a required variable is missing, the agent stops at start-up and names it. Requests, tool results and cluster
+facts are sent to the model endpoint.
 
 ## How it works
 
@@ -121,7 +132,8 @@ decide how it is done, and you decide whether a job runs. [docs/DESIGN.md](docs/
 ```text
 main.py                  terminal session: one request is one run of the manager
 agents.py                the manager and the two specialist agents
-config.py                settings
+config.py                settings (environment variables)
+requirements.txt         pinned dependencies
 prompts/                 guidance for each agent
 tools/
   session.py, trace.py   what a session wrote and submitted; the JSON trace
@@ -141,19 +153,8 @@ tools/
   retriever.py           search in the i-PI manual
   github_fetch.py        read a file from GitHub (MACE's README)
   show_content.py        show a generated file
-tests/                   pytest suite: tools, scripted-model scenarios, sandbox probes
 docs/                    design, the first run on a real cluster, the defects of v1
 ```
-
-## Development
-
-```bash
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest
-.venv/bin/python -m ruff check .
-```
-
-The tests need no cluster and no model: Slurm commands are faked and a scripted model drives the real agents.
 
 ## Status and limits
 
@@ -170,7 +171,7 @@ The tests need no cluster and no model: Slurm commands are faked and a scripted 
 - [smolagents](https://github.com/huggingface/smolagents) (Hugging Face): agents, code execution, managed agents.
 - [MLIPs-with-iPI](https://github.com/venkatkapil24/MLIPs-with-iPI): the ten i-PI input templates, vendored with
   checksums; licence and source in `tools/ipi_templates/`.
-- [MACE](https://github.com/ACEsuit/mace): `tests/data/` holds options trimmed from MACE's `arg_parser.py`, with its
-  MIT header.
+- [MACE](https://github.com/ACEsuit/mace): the option table is read from the `arg_parser.py` of the MACE you have
+  installed.
 - [i-PI](https://github.com/i-pi/i-pi): its loader checks generated inputs; its input classes answer `ipi_tag_help`.
 - [gte-small](https://huggingface.co/thenlper/gte-small) embeds the i-PI manual for the search tool.

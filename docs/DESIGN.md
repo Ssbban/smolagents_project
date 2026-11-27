@@ -57,9 +57,9 @@ unchanged (`local_python_executor.py:941-951` resolves the name, `safer_func` at
 for modules and dangerous builtins). `run(..., return_full_result=True)` gives `RunResult.state`
 (`max_steps_error` or `success`, `agents.py:523-526`). `_setup_managed_agents` forces `output_type = "string"`
 (`agents.py:387`) and `prompts/code_agent.yaml` hard-codes `-> str:` (lines 146, 215, 276), so the manager's
-templates are edited to say `-> dict:`; a test fails if the stock text changes. The stock `__call__` forwards any
-keyword argument from generated code into `run()` (`agents.py:876`), so `max_steps=999` or `reset=False` from the
-manager would reach the sub-agent; the override drops them.
+templates are edited to say `-> dict:`. The stock `__call__` forwards any keyword argument from generated code
+into `run()` (`agents.py:876`), so `max_steps=999` or `reset=False` from the manager would reach the sub-agent;
+the override drops them.
 Rejected: a Tool wrapper around the sub-agent (it gives the same dict but loses the managed-agent section of the
 prompt, and the wrapper's attributes expose the child the same way); prose reports (the stock template; a failed
 sub-agent's fallback text looked like a success, measured on v1).
@@ -103,13 +103,12 @@ the callback runs outside the step's `try`, so the exception leaves `run()` befo
 `BaseException` also passes the interpreter's `except Exception` (`local_python_executor.py:1655`), the `try` of
 generated code (`evaluate_try`, `1159-1169`) and the agent's step handler (`agents.py:1734`); smolagents itself
 uses this for `FinalAnswerException` (`local_python_executor.py:1572`). That matters only if a plan review ever
-runs inside a sub-agent, whose run happens inside the manager's code action; today only the manager has one. With
-`UserCancelled` changed to an `Exception` subclass,
-`tests/test_agents.py::test_b_cancel_at_plan_review_runs_nothing_and_the_session_goes_on` still passes; with v1's `agent.interrupt()` it fails. Callbacks run in MRO order (`memory.py:314`), so the plan
-review runs before the tracer and the trace holds the approved or modified plan.
+runs inside a sub-agent, whose run happens inside the manager's code action; today only the manager has one.
+Callbacks run in MRO order (`memory.py:314`), so the plan review runs before the tracer and the trace holds the
+approved or modified plan.
 Rejected: `agent.interrupt()` as in the smolagents plan-customisation example (measured on v1: the one extra step
 was a whole sub-agent run including `sbatch`); an `Exception` subclass (in a sub-agent with a plan review it would
-become a manager code error that the model retries; no sub-agent has one now, so no test shows this).
+become a manager code error that the model retries; no sub-agent has one now).
 
 ### No executor time-out
 
@@ -187,12 +186,12 @@ in the agent's process.
 - Remote or container executors. smolagents refuses them with managed agents: "Managed agents are not yet
   supported with remote code execution." (`agents.py:1608-1609`). The tools must also run where `sbatch` is.
 - A handle object that hides a sub-agent's internals from the manager's code. It would put a non-agent object
-  into `managed_agents`; in a one-off feasibility check (not a committed test) smolagents' `visualize()` and
-  `to_dict()` / `save()` failed on it.
-  The risk addressed here is an over-helpful model, not a hostile one; the reach that remains is documented and
-  kept as an expected-failure test.
-- A simulated scheduler. Its likeness to a real Slurm would itself need checking. Fakes of `subprocess.run` test
-  the tools' logic; behaviour on a real scheduler can only come from a real cluster.
+  into `managed_agents`; in a one-off feasibility check smolagents' `visualize()` and `to_dict()` / `save()`
+  failed on it.
+  The risk addressed here is an over-helpful model, not a hostile one; the reach that remains is a known limit
+  (below, and `docs/V1_DEFECTS.md` AG-11, AG-12).
+- A simulated scheduler. Its likeness to a real Slurm would itself need checking; behaviour on a real scheduler
+  can only come from a real cluster.
 
 ## What comparable public projects do
 
@@ -205,9 +204,8 @@ Only what informed a decision here. None of the four asks a person before a side
   sub-agent shape on smolagents and the "report problems to the model" loop.
 - [MatClaw](https://github.com/cz2014/MatClaw): one CodeAgent on a vendored copy of smolagents 1.24.0 with code
   run in Jupyter kernels and every import allowed; a container is the only boundary; the model submits HPC jobs
-  itself. It removed the executor time-out and bounds waits inside tools, tests the real agent loop with a scripted
-  model, and checks prompt text against code constants. The first two are used here, the third as a test that
-  prompts name only registered tools; its safety model is not used.
+  itself. It removed the executor time-out and bounds waits inside tools; both are done here too. Its safety model
+  is not used.
 - [Biomni](https://github.com/snap-stanford/Biomni): a LangGraph agent that runs generated code with `exec` in its
   own process, no allow-list, a time-out per execution block; validator tools the agent may call; the
   human-feedback tool is commented out. The validator idea is used here, with the check moved into the tool that
@@ -215,8 +213,8 @@ Only what informed a decision here. None of the four asks a person before a side
 - [Science-Star](https://github.com/ustc-ai4science/Science-Star): a smolagents manager CodeAgent with a
   ToolCallingAgent worker for benchmarks; the worker returns a string report plus a run summary; no side effects to
   gate. Its manager prompt carries a list of tools the manager does not have, because the manager kept calling
-  them. Here the same drift between prompt and tools is caught by a test (`tests/test_prompts.py`), and the string
-  boundary is replaced by the dict.
+  them. Here each prompt names only tools its agent has (`docs/V1_DEFECTS.md` AG-6), and the string boundary is
+  replaced by the dict.
 
 ## Known limits and what would lift each
 
@@ -224,10 +222,8 @@ Only what informed a decision here. None of the four asks a person before a side
 |---|---|
 | Three live-model sessions (four requests, one model; docs/CLUSTER_RUN.md) | A set of requests run against a real model, read from the trace: outcome, steps, tokens |
 | One cluster (Slurm 19.05, CentOS 7); i-PI jobs ran only with templates `03-NVT-SVR` and `00-NVE` | The other templates and another site's Slurm |
-| Manager code can reach a sub-agent object: import list (expected-failure test), API key and tools (one-off probe, no test) | A handle in `managed_agents`, giving up `visualize()` and `save()`; or sub-agents in another process |
+| Manager code can reach a sub-agent object: its import list, API key and tools (one-off probes; `docs/V1_DEFECTS.md` AG-11, AG-12) | A handle in `managed_agents`, giving up `visualize()` and `save()`; or sub-agents in another process |
 | The local interpreter is not a sandbox | Operating-system isolation around the whole process |
-| Executor time-out: tested by the setting only; in the live runs the person answered after about 50 s and once after about 400 s, without a time-out | A scripted-model test whose person answers after more than 30 s |
-| The 512-token chunk test is skipped without the retrieval packages | A CI job with those packages and the cached model |
 | Retriever checked by a keyword heuristic on eight queries | A labelled query set with expected pages |
 | Timings from one Windows machine | The same measurements on the login node |
 | `max_num_epochs="100"` refused | Convert numeric strings for the integer fields of `MACEJobSpec`, as argparse would |

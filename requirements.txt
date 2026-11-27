@@ -1,5 +1,4 @@
 smolagents[openai,toolkit]==1.26.0
-python-dotenv==1.2.4
 pyyaml==6.0.4
 requests==2.34.2
 # i-PI: checks generated inputs and answers ipi_tag_help

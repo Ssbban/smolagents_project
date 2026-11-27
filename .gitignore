@@ -1,28 +1,19 @@
 __pycache__/
 *.py[cod]
-*.pyo
 
+# never commit a key
 .env
-.env.*
-!.env.example
 
+# written by the agent
 runs/
 .cache/
-mace_scripts/
-ipi_scripts/
-scripts/
 
-data/*.model
-data/*.pt
-data/*.xyz
+# written by jobs
+slurm-*.out
 checkpoints/
 logs/
 results/
-slurm-*.out
 *.model
 *.pt
 
 .venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
