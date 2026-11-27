@@ -125,7 +125,7 @@ A manager agent passes each request to a MACE agent or an i-PI agent. The agents
 that code can neither open files nor run commands: only the project's tools write files, after checking their
 inputs, into `runs/<session>/`. `slurm_submit` submits only a job script those tools wrote in this session,
 unchanged, and only after it has shown it to you and you answered `y`. So the model decides what to do, the tools
-decide how it is done, and you decide whether a job runs. [docs/DESIGN.md](docs/DESIGN.md) explains each mechanism.
+decide how it is done, and you decide whether a job runs.
 
 ## Project structure
 
@@ -141,49 +141,45 @@ smolagents_project/
 │   ├── mace_instruction.txt
 │   └── ipi_instruction.txt
 │
-├── tools/                         everything the agents can call
-│   │
-│   │   MACE training
-│   ├── mace_cli_schema.py         options of the installed MACE version
-│   ├── mace_script.py             writes the training job
-│   │
-│   │   i-PI molecular dynamics
-│   ├── ipi_templates/             ten input templates, pinned to their source
-│   ├── ipi_help.py                what an i-PI tag means, its values and units
-│   ├── ipi_InputFile_generator.py writes input.xml from a template
-│   ├── ipi_check.py               has i-PI itself load the input
-│   ├── ipi_runase_generator.py    writes the ASE client
-│   ├── ipi_submit_generator.py    writes the job script
-│   ├── structure_writer.py        builds a starting structure
-│   ├── retriever.py               searches the i-PI manual
-│   │
-│   │   Slurm
-│   ├── slurm_config.py            partitions, nodes, conda environments
-│   ├── specs.py                   validation of Slurm and job settings
-│   ├── preflight.py               checks before a submission
-│   ├── approval.py                the y / n question to you
-│   ├── slurm_submit.py            submits an approved job
-│   ├── job_status.py              job state and log tail
-│   ├── job_output.py              reads a job's output files
-│   │
-│   │   Session and helpers
-│   ├── session.py                 what this session wrote and submitted
-│   ├── trace.py                   the JSON trace of a session
-│   ├── plan_review.py             the plan review at the start of a request
-│   ├── show_content.py            shows a generated file
-│   └── github_fetch.py            reads a file from GitHub
-│
-└── docs/                          design notes, the first cluster run, v1 defects
+└── tools/                         everything the agents can call
+    │
+    │   MACE training
+    ├── mace_cli_schema.py         options of the installed MACE version
+    ├── mace_script.py             writes the training job
+    │
+    │   i-PI molecular dynamics
+    ├── ipi_templates/             ten input templates, pinned to their source
+    ├── ipi_help.py                what an i-PI tag means, its values and units
+    ├── ipi_InputFile_generator.py writes input.xml from a template
+    ├── ipi_check.py               has i-PI itself load the input
+    ├── ipi_runase_generator.py    writes the ASE client
+    ├── ipi_submit_generator.py    writes the job script
+    ├── structure_writer.py        builds a starting structure
+    ├── retriever.py               searches the i-PI manual
+    │
+    │   Slurm
+    ├── slurm_config.py            partitions, nodes, conda environments
+    ├── specs.py                   validation of Slurm and job settings
+    ├── preflight.py               checks before a submission
+    ├── approval.py                the y / n question to you
+    ├── slurm_submit.py            submits an approved job
+    ├── job_status.py              job state and log tail
+    ├── job_output.py              reads a job's output files
+    │
+    │   Session and helpers
+    ├── session.py                 what this session wrote and submitted
+    ├── trace.py                   the JSON trace of a session
+    ├── plan_review.py             the plan review at the start of a request
+    ├── show_content.py            shows a generated file
+    └── github_fetch.py            reads a file from GitHub
 ```
 
 ## Status and limits
 
 - Run on one cluster with one model: four requests and five jobs, all completed, each submitted after the person's
-  `y` ([docs/CLUSTER_RUN.md](docs/CLUSTER_RUN.md)). Success rates over many requests have not been measured.
+  `y`. Success rates over many requests have not been measured.
 - smolagents' Python sandbox is not a security boundary against a hostile model; the guarantees above hold for
-  mistakes, not attacks ([docs/DESIGN.md](docs/DESIGN.md), "Known limits").
-- This is the second version; [docs/V1_DEFECTS.md](docs/V1_DEFECTS.md) lists what was wrong with the first and what
-  fixed it.
+  mistakes, not attacks.
 - No licence file yet.
 
 ## Credits
